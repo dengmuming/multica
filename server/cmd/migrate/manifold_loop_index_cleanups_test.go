@@ -16,6 +16,7 @@ func TestManifoldLoopConcurrentIndexesHaveCleanupHooks(t *testing.T) {
 		"478_loop_artifact_parent_idx":    "idx_loop_artifact_parent_created",
 		"479_loop_artifact_node_idx":      "idx_loop_artifact_node_created",
 		"480_loop_artifact_task_idx":      "idx_loop_artifact_task",
+		"481_loop_instance_key_uq":        "idx_issue_manifold_loop_instance_key",
 	}
 
 	for version, index := range want {
