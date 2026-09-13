@@ -21,16 +21,18 @@ type LoopInstanceWriter interface {
 }
 
 type PersistLoopInstanceRequest struct {
-	WorkspaceID   string
-	ProjectID     string
-	InstanceKey   string
-	Title         string
-	Description   string
-	TemplateKey   string
+	WorkspaceID     string
+	ProjectID       string
+	InstanceKey     string
+	Title           string
+	Description     string
+	CreatorType     string
+	CreatorID       string
+	TemplateKey     string
 	TemplateVersion int
-	PolicyVersion string
-	Plan          looptemplate.CompiledPlan
-	RoleBindings  looptemplate.RoleBindings
+	PolicyVersion   string
+	Plan            looptemplate.CompiledPlan
+	RoleBindings    looptemplate.RoleBindings
 }
 
 type PersistedLoopInstance struct {
@@ -46,6 +48,8 @@ type InstantiateRequest struct {
 	InstanceKey string
 	Title       string
 	Description string
+	CreatorType string
+	CreatorID   string
 	Bindings    looptemplate.RoleBindings
 }
 
@@ -75,6 +79,9 @@ func (s *Instantiator) Instantiate(ctx context.Context, req InstantiateRequest) 
 	if strings.TrimSpace(req.Title) == "" {
 		return InstantiateResult{}, fmt.Errorf("%w: missing title", ErrInvalidInstantiateRequest)
 	}
+	if (req.CreatorType != "member" && req.CreatorType != "agent") || strings.TrimSpace(req.CreatorID) == "" {
+		return InstantiateResult{}, fmt.Errorf("%w: trusted creator identity is required", ErrInvalidInstantiateRequest)
+	}
 
 	preflight, err := s.preflight.Preflight(ctx, InstantiatePreflightRequest{
 		WorkspaceID: req.WorkspaceID,
@@ -94,6 +101,8 @@ func (s *Instantiator) Instantiate(ctx context.Context, req InstantiateRequest) 
 		InstanceKey:     req.InstanceKey,
 		Title:           strings.TrimSpace(req.Title),
 		Description:     req.Description,
+		CreatorType:     req.CreatorType,
+		CreatorID:       req.CreatorID,
 		TemplateKey:     preflight.Template.Key,
 		TemplateVersion: preflight.Template.Version,
 		PolicyVersion:   preflight.Template.PolicyVersion,
