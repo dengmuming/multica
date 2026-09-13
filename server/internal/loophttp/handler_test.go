@@ -74,26 +74,23 @@ func requestJSON(t *testing.T, method, path string, body any) *http.Request {
 	return req
 }
 
-func TestCreateLoopUsesAuthenticatedWorkspaceContext(t *testing.T) {
+func createLoopBodyFixture() map[string]any {
+	return map[string]any{
+		"project_id": "project-1", "template_key": "feature-development", "version": 3,
+		"instance_key": "feature-123", "title": "Token licensing",
+		"bindings": map[string]any{"backend": map[string]any{"type": "agent", "id": "agent-1"}},
+	}
+}
+
+func TestCreateLoopUsesAuthenticatedWorkspaceAndMemberCreator(t *testing.T) {
 	inst := &fakeInstantiator{value: loopservice.InstantiateResult{
 		Template: loopservice.PublishedTemplate{Key: "feature-development", Version: 3},
-		Instance: loopservice.PersistedLoopInstance{
-			ParentIssueID: "parent-1",
-			NodeIssueIDs: map[string]string{"backend": "issue-backend"},
-		},
+		Instance: loopservice.PersistedLoopInstance{ParentIssueID: "parent-1", NodeIssueIDs: map[string]string{"backend": "issue-backend"}},
 	}}
 	h := New(inst, nil, nil)
-	req := requestJSON(t, http.MethodPost, "/api/loops", map[string]any{
-		"project_id":   "project-1",
-		"template_key": "feature-development",
-		"version":      3,
-		"instance_key": "feature-123",
-		"title":        "Token licensing",
-		"bindings": map[string]any{
-			"backend": map[string]any{"type": "agent", "id": "agent-1"},
-		},
-	})
+	req := requestJSON(t, http.MethodPost, "/api/loops", createLoopBodyFixture())
 	req.Header.Set("X-Workspace-ID", "workspace-server-stamped")
+	req.Header.Set("X-User-ID", "user-server-stamped")
 	rr := httptest.NewRecorder()
 
 	testRouter(h).ServeHTTP(rr, req)
@@ -103,8 +100,42 @@ func TestCreateLoopUsesAuthenticatedWorkspaceContext(t *testing.T) {
 	if inst.calls != 1 || inst.last.WorkspaceID != "workspace-server-stamped" {
 		t.Fatalf("instantiator = calls=%d req=%#v", inst.calls, inst.last)
 	}
+	if inst.last.CreatorType != "member" || inst.last.CreatorID != "user-server-stamped" {
+		t.Fatalf("creator = %s:%s", inst.last.CreatorType, inst.last.CreatorID)
+	}
 	if inst.last.Bindings["backend"] != (looptemplate.RoleBinding{Type: "agent", ID: "agent-1"}) {
 		t.Fatalf("bindings = %#v", inst.last.Bindings)
+	}
+}
+
+func TestCreateLoopUsesTaskTokenAgentCreator(t *testing.T) {
+	inst := &fakeInstantiator{value: loopservice.InstantiateResult{Template: loopservice.PublishedTemplate{Key: "feature-development", Version: 3}, Instance: loopservice.PersistedLoopInstance{ParentIssueID: "parent-1"}}}
+	h := New(inst, nil, nil)
+	req := requestJSON(t, http.MethodPost, "/api/loops", createLoopBodyFixture())
+	req.Header.Set("X-Workspace-ID", "workspace-1")
+	req.Header.Set("X-Actor-Source", "task_token")
+	req.Header.Set("X-Agent-ID", "agent-creator")
+	req.Header.Set("X-User-ID", "spoofed-human")
+	rr := httptest.NewRecorder()
+
+	testRouter(h).ServeHTTP(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	if inst.last.CreatorType != "agent" || inst.last.CreatorID != "agent-creator" {
+		t.Fatalf("creator = %s:%s", inst.last.CreatorType, inst.last.CreatorID)
+	}
+}
+
+func TestCreateLoopRejectsMissingAuthenticatedCreator(t *testing.T) {
+	inst := &fakeInstantiator{}
+	h := New(inst, nil, nil)
+	req := requestJSON(t, http.MethodPost, "/api/loops", createLoopBodyFixture())
+	req.Header.Set("X-Workspace-ID", "workspace-1")
+	rr := httptest.NewRecorder()
+	testRouter(h).ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized || inst.calls != 0 {
+		t.Fatalf("status=%d calls=%d body=%s", rr.Code, inst.calls, rr.Body.String())
 	}
 }
 
@@ -116,6 +147,7 @@ func TestCreateLoopDuplicateReturnsConflict(t *testing.T) {
 		"instance_key": "duplicate", "title": "Duplicate", "bindings": map[string]any{},
 	})
 	req.Header.Set("X-Workspace-ID", "workspace-1")
+	req.Header.Set("X-User-ID", "user-1")
 	rr := httptest.NewRecorder()
 
 	testRouter(h).ServeHTTP(rr, req)
@@ -127,9 +159,7 @@ func TestCreateLoopDuplicateReturnsConflict(t *testing.T) {
 func TestEvaluationTaskTokenIdentityCannotCrossTask(t *testing.T) {
 	evals := &fakeEvaluationSubmitter{}
 	h := New(nil, evals, nil)
-	req := requestJSON(t, http.MethodPost, "/api/tasks/task-url/loop-evaluation", map[string]any{
-		"evaluation_kind": "test", "verdict": "pass",
-	})
+	req := requestJSON(t, http.MethodPost, "/api/tasks/task-url/loop-evaluation", map[string]any{"evaluation_kind": "test", "verdict": "pass"})
 	req.Header.Set("X-Actor-Source", "task_token")
 	req.Header.Set("X-Agent-ID", "agent-1")
 	req.Header.Set("X-Task-ID", "task-other")
@@ -148,20 +178,13 @@ func TestEvaluationUsesServerStampedAgentIdentity(t *testing.T) {
 	evals := &fakeEvaluationSubmitter{value: loopservice.SubmitEvaluationResult{
 		Evaluation: loopservice.PersistedEvaluation{EvaluationID: "eval-1", Created: true},
 		Normalized: loopevaluation.Normalized{Submission: loopevaluation.Submission{EvaluationKind: "test", Verdict: "pass"}},
-		Policy: loopservice.PolicyTickResult{
-			Applied: true,
-			Decision: looppolicy.Decision{Reason: "stage_60_active"},
-		},
+		Policy: loopservice.PolicyTickResult{Applied: true, Decision: looppolicy.Decision{Reason: "stage_60_active"}},
 	}}
 	h := New(nil, evals, nil)
-	req := requestJSON(t, http.MethodPost, "/api/tasks/task-1/loop-evaluation", map[string]any{
-		"evaluation_kind": "test", "verdict": "pass",
-	})
+	req := requestJSON(t, http.MethodPost, "/api/tasks/task-1/loop-evaluation", map[string]any{"evaluation_kind": "test", "verdict": "pass"})
 	req.Header.Set("X-Actor-Source", "task_token")
 	req.Header.Set("X-Agent-ID", "agent-test")
 	req.Header.Set("X-Task-ID", "task-1")
-	// A raw client could try to supply X-User-ID too, but evaluator identity for
-	// a task token must remain the server-stamped agent id.
 	req.Header.Set("X-User-ID", "owner-user")
 	rr := httptest.NewRecorder()
 
@@ -176,16 +199,11 @@ func TestEvaluationUsesServerStampedAgentIdentity(t *testing.T) {
 
 func TestEvaluationPersistedButPolicyFailedReturnsAccepted(t *testing.T) {
 	evals := &fakeEvaluationSubmitter{
-		value: loopservice.SubmitEvaluationResult{
-			Evaluation: loopservice.PersistedEvaluation{EvaluationID: "eval-1", Created: true},
-			Normalized: loopevaluation.Normalized{Submission: loopevaluation.Submission{EvaluationKind: "test", Verdict: "fail"}, RecoveryTarget: "backend"},
-		},
+		value: loopservice.SubmitEvaluationResult{Evaluation: loopservice.PersistedEvaluation{EvaluationID: "eval-1", Created: true}, Normalized: loopevaluation.Normalized{Submission: loopevaluation.Submission{EvaluationKind: "test", Verdict: "fail"}, RecoveryTarget: "backend"}},
 		err: errors.New("evaluation persisted but policy tick failed: database unavailable"),
 	}
 	h := New(nil, evals, nil)
-	req := requestJSON(t, http.MethodPost, "/api/tasks/task-1/loop-evaluation", map[string]any{
-		"evaluation_kind": "test", "verdict": "fail",
-	})
+	req := requestJSON(t, http.MethodPost, "/api/tasks/task-1/loop-evaluation", map[string]any{"evaluation_kind": "test", "verdict": "fail"})
 	req.Header.Set("X-User-ID", "member-1")
 	rr := httptest.NewRecorder()
 
@@ -201,9 +219,7 @@ func TestEvaluationPersistedButPolicyFailedReturnsAccepted(t *testing.T) {
 func TestApprovalRejectsMachineCredentialBeforeService(t *testing.T) {
 	approvals := &fakeApprovalDecider{}
 	h := New(nil, nil, approvals)
-	req := requestJSON(t, http.MethodPost, "/api/loop-approvals/approval-1/decision", map[string]any{
-		"decision": "approved", "rationale": "ship",
-	})
+	req := requestJSON(t, http.MethodPost, "/api/loop-approvals/approval-1/decision", map[string]any{"decision": "approved", "rationale": "ship"})
 	req.Header.Set("X-Actor-Source", "task_token")
 	req.Header.Set("X-User-ID", "owner-user")
 	rr := httptest.NewRecorder()
@@ -223,11 +239,7 @@ func TestApprovalUsesAuthenticatedMemberNotBodyIdentity(t *testing.T) {
 		Policy: loopservice.PolicyTickResult{Applied: true, Decision: looppolicy.Decision{Reason: "stage_70_active"}},
 	}}
 	h := New(nil, nil, approvals)
-	// Unknown fields are rejected, so a decided_by spoof cannot even be silently
-	// ignored. The only identity source is X-User-ID stamped by Auth middleware.
-	req := requestJSON(t, http.MethodPost, "/api/loop-approvals/approval-1/decision", map[string]any{
-		"decision": "approved", "rationale": "ship", "decided_by": "attacker",
-	})
+	req := requestJSON(t, http.MethodPost, "/api/loop-approvals/approval-1/decision", map[string]any{"decision": "approved", "rationale": "ship", "decided_by": "attacker"})
 	req.Header.Set("X-User-ID", "member-real")
 	rr := httptest.NewRecorder()
 	testRouter(h).ServeHTTP(rr, req)
@@ -238,9 +250,7 @@ func TestApprovalUsesAuthenticatedMemberNotBodyIdentity(t *testing.T) {
 		t.Fatalf("approval calls = %d, want 0", approvals.calls)
 	}
 
-	req = requestJSON(t, http.MethodPost, "/api/loop-approvals/approval-1/decision", map[string]any{
-		"decision": "approved", "rationale": "ship",
-	})
+	req = requestJSON(t, http.MethodPost, "/api/loop-approvals/approval-1/decision", map[string]any{"decision": "approved", "rationale": "ship"})
 	req.Header.Set("X-User-ID", "member-real")
 	rr = httptest.NewRecorder()
 	testRouter(h).ServeHTTP(rr, req)
@@ -253,16 +263,9 @@ func TestApprovalUsesAuthenticatedMemberNotBodyIdentity(t *testing.T) {
 }
 
 func TestApprovalPersistedButPolicyFailedReturnsAccepted(t *testing.T) {
-	approvals := &fakeApprovalDecider{
-		value: loopservice.DecideApprovalResult{
-			Approval: loopservice.PersistedApprovalDecision{ApprovalID: "approval-1", State: "approved", Changed: true},
-		},
-		err: errors.New("approval persisted but policy tick failed: database unavailable"),
-	}
+	approvals := &fakeApprovalDecider{value: loopservice.DecideApprovalResult{Approval: loopservice.PersistedApprovalDecision{ApprovalID: "approval-1", State: "approved", Changed: true}}, err: errors.New("approval persisted but policy tick failed: database unavailable")}
 	h := New(nil, nil, approvals)
-	req := requestJSON(t, http.MethodPost, "/api/loop-approvals/approval-1/decision", map[string]any{
-		"decision": "approved",
-	})
+	req := requestJSON(t, http.MethodPost, "/api/loop-approvals/approval-1/decision", map[string]any{"decision": "approved"})
 	req.Header.Set("X-User-ID", "member-1")
 	rr := httptest.NewRecorder()
 
