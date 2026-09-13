@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/looptemplate"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -100,7 +99,3 @@ func bindingLookupError(role string, binding looptemplate.RoleBinding, err error
 	}
 	return fmt.Errorf("lookup role %q %s %s: %w", role, binding.Type, binding.ID, err)
 }
-
-// Ensure the UUID type stays visible to compile-time interface checks in tests
-// that use generated SQLC parameter structs without importing utility helpers.
-var _ pgtype.UUID
