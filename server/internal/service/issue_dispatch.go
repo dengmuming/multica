@@ -91,6 +91,9 @@ func (s *IssueService) DispatchExistingAssignedIssue(ctx context.Context, req Ex
 		if err != nil {
 			return pgtype.UUID{}, fmt.Errorf("%w: squad lookup failed", ErrIssueDispatchUnavailable)
 		}
+		if squad.ArchivedAt.Valid {
+			return pgtype.UUID{}, fmt.Errorf("%w: squad %s is archived", ErrIssueDispatchUnavailable, util.UUIDToString(squad.ID))
+		}
 		agent, err := s.Queries.GetAgent(ctx, squad.LeaderID)
 		if err != nil {
 			return pgtype.UUID{}, fmt.Errorf("%w: squad leader lookup failed", ErrIssueDispatchUnavailable)
