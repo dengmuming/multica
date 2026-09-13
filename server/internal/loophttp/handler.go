@@ -17,8 +17,6 @@ import (
 
 const maxBodyBytes = 1 << 20
 
-// Instantiator is deliberately narrower than *loopservice.Instantiator so the
-// HTTP contract can be tested and wired before sqlc-backed repositories exist.
 type Instantiator interface {
 	Instantiate(context.Context, loopservice.InstantiateRequest) (loopservice.InstantiateResult, error)
 }
@@ -78,6 +76,10 @@ func (h *Handler) CreateLoop(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "workspace context is required")
 		return
 	}
+	creatorType, creatorID, ok := creatorIdentity(w, r)
+	if !ok {
+		return
+	}
 
 	var body createLoopBody
 	if !decodeBody(w, r, &body) {
@@ -96,6 +98,8 @@ func (h *Handler) CreateLoop(w http.ResponseWriter, r *http.Request) {
 		InstanceKey: body.InstanceKey,
 		Title:       body.Title,
 		Description: body.Description,
+		CreatorType: creatorType,
+		CreatorID:   creatorID,
 		Bindings:    bindings,
 	})
 	if err != nil {
@@ -165,9 +169,6 @@ func (h *Handler) SubmitEvaluation(w http.ResponseWriter, r *http.Request) {
 		},
 	})
 	if err != nil {
-		// Persistence is authoritative even if the follow-up policy tick fails.
-		// Surface the durable result as 202 so clients do not mistake a retryable
-		// control-plane failure for a rejected evaluation and submit a new result.
 		if result.Evaluation.EvaluationID != "" {
 			writeJSON(w, http.StatusAccepted, evaluationResponse{
 				EvaluationID: result.Evaluation.EvaluationID,
@@ -265,6 +266,23 @@ func (h *Handler) DecideApproval(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func creatorIdentity(w http.ResponseWriter, r *http.Request) (string, string, bool) {
+	if strings.TrimSpace(r.Header.Get("X-Actor-Source")) == "task_token" {
+		agentID := strings.TrimSpace(r.Header.Get("X-Agent-ID"))
+		if agentID == "" {
+			writeError(w, http.StatusUnauthorized, "task-token creator identity is incomplete")
+			return "", "", false
+		}
+		return "agent", agentID, true
+	}
+	memberID := strings.TrimSpace(r.Header.Get("X-User-ID"))
+	if memberID == "" {
+		writeError(w, http.StatusUnauthorized, "authenticated loop creator is required")
+		return "", "", false
+	}
+	return "member", memberID, true
+}
+
 func evaluatorIdentity(w http.ResponseWriter, r *http.Request, taskID string) (string, string, bool) {
 	if strings.TrimSpace(r.Header.Get("X-Actor-Source")) == "task_token" {
 		authTaskID := strings.TrimSpace(r.Header.Get("X-Task-ID"))
@@ -323,7 +341,6 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(payload); err != nil {
-		// Headers may already be committed; there is no second safe response.
 		return
 	}
 }
