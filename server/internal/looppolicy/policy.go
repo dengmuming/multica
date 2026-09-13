@@ -37,8 +37,8 @@ type Decision struct {
 // Callers build it from child Issues plus authoritative evaluation/approval
 // rows. Policy never reads comments or arbitrary agent prose.
 type RuntimeState struct {
-	ParentState string                    `json:"parent_state"`
-	Nodes       map[string]NodeState      `json:"nodes"`
+	ParentState string                     `json:"parent_state"`
+	Nodes       map[string]NodeState       `json:"nodes"`
 	Evaluations map[string]EvaluationState `json:"evaluations,omitempty"`
 	Approvals   map[string]ApprovalState   `json:"approvals,omitempty"`
 }
@@ -108,11 +108,24 @@ func Evaluate(plan looptemplate.CompiledPlan, state RuntimeState) (Decision, err
 }
 
 func evaluateRecovery(plan looptemplate.CompiledPlan, state RuntimeState) (Decision, bool, error) {
-	// Earliest failed gate wins. Later-stage evidence cannot legally override an
-	// earlier unresolved failure.
+	// Earliest failed *active/completed* gate wins. A gate parked back to backlog
+	// during recovery deliberately ignores its old evaluation/approval row; that
+	// evidence belongs to the previous workflow attempt and must not fire again
+	// after the target developer node finishes.
 	for _, node := range plan.IncludedNodes {
+		nodeState := state.Nodes[node.Key]
+		if nodeState.Status == "backlog" {
+			continue
+		}
+
 		switch node.Type {
 		case looptemplate.NodeTypeEvaluation:
+			// Structured evaluations are accepted only after the evaluator run
+			// completes. Requiring done here also prevents a stale result from
+			// racing a newly activated evaluator Issue.
+			if nodeState.Status != "done" {
+				continue
+			}
 			eval, ok := state.Evaluations[node.Key]
 			if !ok {
 				continue
@@ -191,6 +204,12 @@ func recoveryDecision(plan looptemplate.CompiledPlan, state RuntimeState, target
 	targetState := state.Nodes[target]
 	if maxRetries <= 0 || targetState.RetryCount >= maxRetries {
 		return blockDecision(reason + ":retry_budget_exhausted")
+	}
+
+	// If the target is already active, the recovery command was applied on a
+	// previous policy tick. Do not reopen/increment it again.
+	if targetState.Status == "todo" || targetState.Status == "in_progress" || targetState.Status == "in_review" {
+		return Decision{Reason: reason + ":recovery_in_progress"}
 	}
 
 	actions := []Action{{Type: ActionReopenNode, NodeKey: target, Reason: reason}}
