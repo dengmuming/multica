@@ -24,35 +24,22 @@ func (f *fakeLoopInstanceWriter) PersistLoopInstance(_ context.Context, req Pers
 func TestInstantiatorPersistsCompiledPlan(t *testing.T) {
 	def := validDefinition()
 	preflight := NewInstantiateService(
-		fakeTemplateReader{template: PublishedTemplate{
-			Key:           def.Key,
-			Version:       4,
-			PolicyVersion: "policy-v1",
-			Definition:    def,
-		}},
+		fakeTemplateReader{template: PublishedTemplate{Key: def.Key, Version: 4, PolicyVersion: "policy-v1", Definition: def}},
 		&fakeBindingScopeValidator{},
 		fakeInstanceLookup{},
 	)
 	writer := &fakeLoopInstanceWriter{result: PersistedLoopInstance{
 		ParentIssueID: "parent-issue",
-		NodeIssueIDs: map[string]string{
-			"backend":  "backend-issue",
-			"approval": "approval-issue",
-		},
+		NodeIssueIDs: map[string]string{"backend": "backend-issue", "approval": "approval-issue"},
 	}}
 	service := NewInstantiator(preflight, writer)
 
 	result, err := service.Instantiate(context.Background(), InstantiateRequest{
-		WorkspaceID: "workspace-1",
-		ProjectID:   "project-1",
-		TemplateKey: def.Key,
-		Version:     4,
-		InstanceKey: "feature-456",
-		Title:       "Add token licensing",
+		WorkspaceID: "workspace-1", ProjectID: "project-1", TemplateKey: def.Key, Version: 4,
+		InstanceKey: "feature-456", Title: "Add token licensing",
 		Description: "Support dynamic Docker/Kubernetes workers.",
-		Bindings: looptemplate.RoleBindings{
-			"backend": {Type: "agent", ID: "agent-1"},
-		},
+		CreatorType: "member", CreatorID: "user-1",
+		Bindings: looptemplate.RoleBindings{"backend": {Type: "agent", ID: "agent-1"}},
 	})
 	if err != nil {
 		t.Fatalf("Instantiate() error = %v", err)
@@ -65,6 +52,9 @@ func TestInstantiatorPersistsCompiledPlan(t *testing.T) {
 	}
 	if writer.last.PolicyVersion != "policy-v1" {
 		t.Fatalf("PolicyVersion = %q, want policy-v1", writer.last.PolicyVersion)
+	}
+	if writer.last.CreatorType != "member" || writer.last.CreatorID != "user-1" {
+		t.Fatalf("creator = %s:%s", writer.last.CreatorType, writer.last.CreatorID)
 	}
 	if len(writer.last.Plan.IncludedNodes) != 2 {
 		t.Fatalf("persisted plan nodes = %d, want 2", len(writer.last.Plan.IncludedNodes))
@@ -85,15 +75,9 @@ func TestInstantiatorDoesNotWriteWhenPreflightFails(t *testing.T) {
 	service := NewInstantiator(preflight, writer)
 
 	_, err := service.Instantiate(context.Background(), InstantiateRequest{
-		WorkspaceID: "workspace-1",
-		ProjectID:   "project-1",
-		TemplateKey: def.Key,
-		Version:     1,
-		InstanceKey: "feature-duplicate",
-		Title:       "Duplicate",
-		Bindings: looptemplate.RoleBindings{
-			"backend": {Type: "agent", ID: "agent-1"},
-		},
+		WorkspaceID: "workspace-1", ProjectID: "project-1", TemplateKey: def.Key, Version: 1,
+		InstanceKey: "feature-duplicate", Title: "Duplicate", CreatorType: "member", CreatorID: "user-1",
+		Bindings: looptemplate.RoleBindings{"backend": {Type: "agent", ID: "agent-1"}},
 	})
 	if !errors.Is(err, ErrLoopInstanceExists) {
 		t.Fatalf("Instantiate() error = %v, want ErrLoopInstanceExists", err)
@@ -114,17 +98,19 @@ func TestInstantiatorPropagatesWriteConflict(t *testing.T) {
 	service := NewInstantiator(preflight, writer)
 
 	_, err := service.Instantiate(context.Background(), InstantiateRequest{
-		WorkspaceID: "workspace-1",
-		ProjectID:   "project-1",
-		TemplateKey: def.Key,
-		Version:     1,
-		InstanceKey: "feature-race",
-		Title:       "Concurrent request",
-		Bindings: looptemplate.RoleBindings{
-			"backend": {Type: "agent", ID: "agent-1"},
-		},
+		WorkspaceID: "workspace-1", ProjectID: "project-1", TemplateKey: def.Key, Version: 1,
+		InstanceKey: "feature-race", Title: "Concurrent request", CreatorType: "agent", CreatorID: "agent-creator",
+		Bindings: looptemplate.RoleBindings{"backend": {Type: "agent", ID: "agent-1"}},
 	})
 	if !errors.Is(err, ErrLoopInstanceExists) {
 		t.Fatalf("Instantiate() error = %v, want wrapped ErrLoopInstanceExists", err)
+	}
+}
+
+func TestInstantiatorRejectsMissingCreatorIdentity(t *testing.T) {
+	service := NewInstantiator(&InstantiateService{}, &fakeLoopInstanceWriter{})
+	_, err := service.Instantiate(context.Background(), InstantiateRequest{Title: "Feature"})
+	if !errors.Is(err, ErrInvalidInstantiateRequest) {
+		t.Fatalf("Instantiate() error = %v, want ErrInvalidInstantiateRequest", err)
 	}
 }
