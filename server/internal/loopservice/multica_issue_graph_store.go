@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/issueposition"
@@ -54,8 +55,6 @@ func (s *MulticaIssueGraphStore) CreateGraphAtomically(ctx context.Context, cmd 
 		return CreatedIssueGraph{}, errors.New("loop graph requires at least one child Issue")
 	}
 
-	// Resolve Cloud quota policy before opening the DB transaction so an
-	// entitlement provider never holds product-database locks.
 	issueCountPolicy := multicaservice.ResolveIssueCountPolicy(ctx, s.issues.Entitlements, workspaceID)
 
 	tx, err := s.issues.TxStarter.Begin(ctx)
@@ -106,9 +105,7 @@ func (s *MulticaIssueGraphStore) CreateGraphAtomically(ctx context.Context, cmd 
 
 func createLoopIssueRow(
 	ctx context.Context,
-	tx interface {
-		QueryRow(context.Context, string, ...any) pgtype.Row
-	},
+	tx pgx.Tx,
 	qtx *db.Queries,
 	workspaceID, projectID, parentIssueID pgtype.UUID,
 	cmd LoopIssueCommand,
