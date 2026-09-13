@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -17,6 +18,7 @@ import (
 )
 
 const loopInstanceUniqueIndex = "idx_issue_manifold_loop_instance_key"
+const loopInstanceMetadataKey = "manifold.loop.instance_key"
 
 // MulticaIssueGraphStore persists the compiled Parent/Child graph with existing
 // generated Issue queries. It intentionally does not depend on generated
@@ -72,7 +74,7 @@ func (s *MulticaIssueGraphStore) CreateGraphAtomically(ctx context.Context, cmd 
 	if err != nil {
 		return CreatedIssueGraph{}, mapLoopInstanceConflict(err)
 	}
-	if err := setLoopMetadata(ctx, qtx, workspaceID, parent.ID, cmd.Parent.Metadata); err != nil {
+	if err := setLoopMetadata(ctx, qtx, workspaceID, parent.ID, cmd.Parent.Metadata, true); err != nil {
 		return CreatedIssueGraph{}, mapLoopInstanceConflict(err)
 	}
 
@@ -91,7 +93,7 @@ func (s *MulticaIssueGraphStore) CreateGraphAtomically(ctx context.Context, cmd 
 		if err != nil {
 			return CreatedIssueGraph{}, err
 		}
-		if err := setLoopMetadata(ctx, qtx, workspaceID, issue.ID, child.Metadata); err != nil {
+		if err := setLoopMetadata(ctx, qtx, workspaceID, issue.ID, child.Metadata, false); err != nil {
 			return CreatedIssueGraph{}, err
 		}
 		created.NodeIssueIDs[child.NodeKey] = uuidString(issue.ID)
@@ -173,9 +175,22 @@ func createLoopIssueRow(
 	})
 }
 
-func setLoopMetadata(ctx context.Context, qtx *db.Queries, workspaceID, issueID pgtype.UUID, metadata map[string]any) error {
-	for key, value := range metadata {
-		encoded, err := json.Marshal(value)
+func setLoopMetadata(ctx context.Context, qtx *db.Queries, workspaceID, issueID pgtype.UUID, metadata map[string]any, instanceFirst bool) error {
+	keys := make([]string, 0, len(metadata))
+	for key := range metadata {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	if instanceFirst {
+		for i, key := range keys {
+			if key == loopInstanceMetadataKey {
+				keys[0], keys[i] = keys[i], keys[0]
+				break
+			}
+	}
+
+	for _, key := range keys {
+		encoded, err := json.Marshal(metadata[key])
 		if err != nil {
 			return fmt.Errorf("encode metadata %q: %w", key, err)
 		}
