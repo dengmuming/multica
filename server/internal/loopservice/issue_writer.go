@@ -43,17 +43,18 @@ type CreatedIssueGraph struct {
 
 // LoopIssueCommand is intentionally close to Multica's existing Issue write
 // shape while keeping pgx/sqlc types out of the loop application package.
-// ParentNodeKey is empty for the root orchestration Issue.
 type LoopIssueCommand struct {
-	NodeKey       string
-	Title         string
-	Description   string
-	Status        string
-	Priority      string
-	AssigneeType  string
-	AssigneeID    string
-	Stage         *int
-	Metadata      map[string]any
+	NodeKey      string
+	Title        string
+	Description  string
+	Status       string
+	Priority     string
+	CreatorType  string
+	CreatorID    string
+	AssigneeType string
+	AssigneeID   string
+	Stage        *int
+	Metadata     map[string]any
 }
 
 type MulticaIssueWriter struct {
@@ -101,6 +102,9 @@ func BuildIssueGraphCommand(req PersistLoopInstanceRequest) (CreateLoopIssueGrap
 	if strings.TrimSpace(req.Title) == "" {
 		return CreateLoopIssueGraphCommand{}, fmt.Errorf("title is required")
 	}
+	if (req.CreatorType != "member" && req.CreatorType != "agent") || strings.TrimSpace(req.CreatorID) == "" {
+		return CreateLoopIssueGraphCommand{}, fmt.Errorf("trusted creator identity is required")
+	}
 	if strings.TrimSpace(req.TemplateKey) == "" || req.TemplateVersion <= 0 {
 		return CreateLoopIssueGraphCommand{}, fmt.Errorf("pinned template key/version are required")
 	}
@@ -113,6 +117,8 @@ func BuildIssueGraphCommand(req PersistLoopInstanceRequest) (CreateLoopIssueGrap
 		Description: req.Description,
 		Status:      loopParentInitialStatus,
 		Priority:    loopIssuePriority,
+		CreatorType: req.CreatorType,
+		CreatorID:   req.CreatorID,
 		Metadata: map[string]any{
 			"manifold.loop.template_key":     req.TemplateKey,
 			"manifold.loop.template_version": req.TemplateVersion,
@@ -131,7 +137,7 @@ func BuildIssueGraphCommand(req PersistLoopInstanceRequest) (CreateLoopIssueGrap
 		}
 		seenNodeKeys[node.Key] = struct{}{}
 
-		child, err := buildChildIssueCommand(node)
+		child, err := buildChildIssueCommand(node, req.CreatorType, req.CreatorID)
 		if err != nil {
 			return CreateLoopIssueGraphCommand{}, err
 		}
@@ -147,7 +153,7 @@ func BuildIssueGraphCommand(req PersistLoopInstanceRequest) (CreateLoopIssueGrap
 	}, nil
 }
 
-func buildChildIssueCommand(node looptemplate.CompiledNode) (LoopIssueCommand, error) {
+func buildChildIssueCommand(node looptemplate.CompiledNode, creatorType, creatorID string) (LoopIssueCommand, error) {
 	if strings.TrimSpace(node.Key) == "" {
 		return LoopIssueCommand{}, fmt.Errorf("compiled node key is required")
 	}
@@ -177,6 +183,8 @@ func buildChildIssueCommand(node looptemplate.CompiledNode) (LoopIssueCommand, e
 		Description:  node.Description,
 		Status:       node.InitialStatus,
 		Priority:     loopIssuePriority,
+		CreatorType:  creatorType,
+		CreatorID:    creatorID,
 		Stage:        &stage,
 		Metadata:     metadata,
 	}
