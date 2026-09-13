@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS idx_loop_template_workspace_status_key;
