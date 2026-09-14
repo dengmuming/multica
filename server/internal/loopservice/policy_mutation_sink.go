@@ -28,6 +28,9 @@ type PolicyMutationBatch struct {
 	PolicyVersion string
 	Reason        string
 	Mutations     []PolicyMutation
+
+	ExpectedParentRevision *int64
+	ExpectedNodeRevisions  map[string]int64
 }
 
 type PolicyMutationType string
@@ -43,11 +46,11 @@ const (
 )
 
 type PolicyMutation struct {
-	Type          PolicyMutationType
-	NodeKey       string
-	IssueID       string
-	ParentState   string
-	Reason        string
+	Type           PolicyMutationType
+	NodeKey        string
+	IssueID        string
+	ParentState    string
+	Reason         string
 	IncrementRetry bool
 }
 
@@ -133,8 +136,9 @@ func (s *DurablePolicyMutationSink) ApplyPolicyDecision(ctx context.Context, cmd
 }
 
 // BuildPolicyMutationBatch is deliberately pure. It preserves action order,
-// resolves node keys to durable Issue IDs, and records exactly which workflow
-// retry transitions must increment the node retry counter.
+// resolves node keys to durable Issue IDs, records exactly which workflow
+// retry transitions must increment the node retry counter, and carries the
+// Issue revision snapshot used to reject stale policy decisions.
 func BuildPolicyMutationBatch(cmd ApplyPolicyDecisionCommand) (PolicyMutationBatch, error) {
 	if strings.TrimSpace(cmd.WorkspaceID) == "" || strings.TrimSpace(cmd.ParentIssueID) == "" {
 		return PolicyMutationBatch{}, errors.New("workspace and parent issue ids are required")
@@ -179,7 +183,12 @@ func BuildPolicyMutationBatch(cmd ApplyPolicyDecisionCommand) (PolicyMutationBat
 	}
 
 	return PolicyMutationBatch{
-		WorkspaceID: cmd.WorkspaceID, ParentIssueID: cmd.ParentIssueID,
-		PolicyVersion: cmd.PolicyVersion, Reason: cmd.Reason, Mutations: mutations,
+		WorkspaceID:             cmd.WorkspaceID,
+		ParentIssueID:           cmd.ParentIssueID,
+		PolicyVersion:           cmd.PolicyVersion,
+		Reason:                  cmd.Reason,
+		Mutations:               mutations,
+		ExpectedParentRevision:  cloneInt64Ptr(cmd.ExpectedParentRevision),
+		ExpectedNodeRevisions:   cloneInt64Map(cmd.ExpectedNodeRevisions),
 	}, nil
 }
