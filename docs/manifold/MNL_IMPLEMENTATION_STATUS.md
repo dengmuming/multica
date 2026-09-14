@@ -6,244 +6,281 @@
 
 ## 1. Architecture baseline
 
-P0 deliberately extends Multica instead of creating a parallel workflow/runtime stack:
+P0 extends Multica rather than creating a parallel workflow/runtime stack:
 
 - parent Issue = Loop instance
 - child Issue = Loop node
-- `issue.stage` = sequential/parallel barrier
+- `issue.stage` = ordered/parallel barrier
 - Agent / Squad / Member = role binding
-- `agent_task_queue` = execution attempt/history
+- `agent_task_queue` = execution attempts
 - Runtime/Daemon = existing Multica execution plane
-- new Manifold persistence only where Multica has no equivalent:
+- Manifold-specific durable state only where Multica has no equivalent:
   - Loop Template
   - Evaluation
   - Approval
   - Artifact / provenance
 - deterministic server policy owns legal transitions
 
-No `mission`, `workflow_run`, or `stage_run` table is introduced in P0.
+No `mission`, `workflow_run`, or `stage_run` table exists in P0.
 
 Naming is fixed:
 
 - **Manifold Agent** = product
 - **Manifold Agent Native Loop** = lifecycle/orchestration architecture
-- **Multica** = current workforce/control-plane foundation
+- **Multica** = workforce/control-plane foundation
 
-## 2. Implemented
+## 2. Implemented core
 
-### Persistence source
+### Template / Compiler
 
-Migrations and SQL source are committed for:
+`server/internal/looptemplate` implements:
+
+- template schema + validation
+- role definitions / role bindings
+- Agent / Evaluation / Approval nodes
+- optional vs required role behavior
+- legal recovery targets
+- deterministic compile
+- same-stage parallelism
+- first included stage `todo`, later stages `backlog`
+- server-owned Approval gates
+
+### Structured Evaluation
+
+`server/internal/loopevaluation` validates:
+
+- exact evaluation kind
+- verdict allowlist
+- score range
+- finding structure/severity
+- owner role/node consistency
+- deterministic recovery target
+- fallback routing
+- no ambiguous multi-target recovery in P0
+
+### Deterministic Policy
+
+`server/internal/looppolicy` implements:
+
+- sequential advancement
+- parallel barriers
+- Evaluation FAIL recovery
+- downstream parking
+- bounded workflow retries
+- Approval request/rejection recovery
+- stale gate protection
+- recovery-in-progress idempotency
+- blocked/completed/cancelled/failed terminal handling
+
+`blocked` is explicitly terminal, preventing repeated `block_loop` decisions on every Tick.
+
+## 3. Persistence and concurrency controls
+
+### Loop tables
+
+Migration 468 creates:
 
 - `loop_template`
 - `loop_evaluation`
 - `loop_approval`
 - `loop_artifact`
-- concurrent indexes `469`–`480`
-- `481_loop_instance_key_uq`
 
-`481` enforces one Loop instance key per `(workspace_id, project_id)` through the parent Issue metadata expression index.
+Indexes 469–480 cover template/evaluation/approval/artifact access patterns.
 
-All MNL concurrent indexes are registered with Multica's invalid-index cleanup hook.
+### Loop instance uniqueness
 
-SQLC sources:
+Migration 481 adds:
 
-- `loop_template.sql`
-- `loop_evaluation.sql`
-- `loop_approval.sql`
-- `loop_artifact.sql`
-- `loop_issue.sql`
+```text
+idx_issue_manifold_loop_instance_key
+(workspace_id, project_id, metadata->>'manifold.loop.instance_key')
+```
 
-### Template / Compiler Core
+This makes Parent Issue metadata the database-level Loop-instance identity and closes the concurrent-create race.
 
-Implemented `server/internal/looptemplate`:
+### Policy version alignment
 
-- P0 schema types
-- template validation
-- role-binding validation
-- optional/required role behavior
-- legal recovery-target validation
-- deterministic `Compile()`
-- same-stage parallelism
-- initial `todo` / later `backlog`
-- server-owned Approval nodes
+Migration 482 changes Evaluation/Approval `policy_version` from integer to TEXT because the application contract treats policy version as an opaque pinned identifier such as `policy-v1`.
 
-### Structured Evaluation Core
+The migration drops the old numeric CHECK constraints before the type change.
 
-Implemented `server/internal/loopevaluation`:
+### Evaluation uniqueness
 
-- exact evaluation kind
-- verdict allowlist
-- score validation
-- structured findings/evidence
-- owner role/node consistency
-- legal deterministic recovery target
-- fallback routing
-- P0 rejection of ambiguous multi-target recovery
+Migration 483 adds:
 
-### Deterministic Policy Core
+```text
+idx_loop_evaluation_one_per_task
+```
 
-Implemented `server/internal/looppolicy`:
+A canonical Task can therefore own at most one authoritative Evaluation result.
 
-- sequential stage advancement
-- parallel barriers
-- Evaluation FAIL recovery
-- downstream re-parking
-- workflow retry budgets
-- Approval request/rejection recovery
-- blocked/completed terminal handling
-- stale gate protection
-- idempotent recovery-in-progress behavior
+Every MNL `CREATE INDEX CONCURRENTLY` migration is registered with Multica's invalid-index cleanup hook.
 
-### Loop instantiation application layer
+## 4. Concrete Loop creation path
 
 Implemented:
 
-- exact template-version preflight
-- workspace-scoped role bindings
-- deterministic compile
-- instance-key preflight
-- creator identity propagation (`member` or `agent`)
-- `CompiledPlan → Parent/Child Issue graph`
-- Parent/Child metadata mapping
-- Approval nodes remain server-owned
-
-### Concrete Issue graph persistence
-
-Implemented `MulticaIssueGraphStore` using existing generated Multica Issue queries rather than waiting for new Loop SQLC output.
-
-The transaction:
-
-1. validates workspace/project;
-2. allocates ordinary Multica Issue numbers;
-3. allocates ordinary column positions;
-4. creates Parent Issue;
-5. writes `manifold.loop.instance_key` first so concurrent requests hit the DB unique constraint early;
-6. writes the remaining Parent metadata;
-7. creates all Child Issues with parent/stage/assignee/creator semantics;
-8. writes Child metadata;
-9. commits the complete graph.
-
-No Task is inserted inside this transaction.
-
-### Canonical dispatch adapter
-
-Implemented explicit dispatch of already-committed Agent/Squad Issues through `IssueService`:
-
-`Issue → AgentReadiness → TaskService → Runtime/Daemon`
+```text
+POST /api/loops
+  ↓
+InstantiateService
+  ↓
+exact published Template version
+  ↓
+workspace-scoped Role Bindings
+  ↓
+Compile
+  ↓
+MulticaIssueGraphStore
+  ↓
+atomic Parent + Child Issues
+  ↓ commit
+MulticaInitialIssueDispatcher
+  ↓
+IssueService → AgentReadiness → TaskService → Runtime/Daemon
+```
 
 Properties:
 
-- no direct `agent_task_queue` inserts
-- Agent/Squad readiness rechecked at dispatch time
-- archived Squad rejected
-- pending Squad work treated idempotently
-- post-commit dispatch failure surfaced as a recoverable condition
+- trusted creator identity is propagated to Parent and every Child
+- Parent/Child issue graph is committed before any Task is created
+- Issue number/position/project/creator/stage semantics reuse Multica
+- `instance_key` is written first so concurrent losers fail early at the unique index
+- Agent/Squad dispatch reuses existing runtime/task semantics
+- archived Agent/Squad bindings are rejected
+- dispatch failures after graph commit are recoverable and must not create a second graph
 
-### Binding scope adapter
+## 5. Concrete policy projection and mutation
 
-Implemented real workspace validation for:
+### Projection
 
-- `agent → agent.id`
-- `squad → squad.id`
-- `member → user.id`
+`MulticaPolicyProjectionReader` reconstructs current state from:
 
-Archived Agent/Squad bindings are rejected.
+- Parent pinned metadata
+- actual Child Issues
+- actual persisted role bindings
+- exact pinned Template
+- current-attempt Evaluation/Approval evidence
+- Parent/Child revisions
 
-### Policy Application Service
+The exact pinned template is recompiled from durable bindings; a running Loop never silently moves to a newly published template version.
 
-Implemented:
+`RawLoopStateRepository` provides temporary raw-PGX access for pinned templates and gate evidence until generated Loop SQLC files are available.
 
-- `PolicyProjectionReader`
-- pure `looppolicy.Evaluate()` invocation
-- action validation
-- `PolicyMutationSink`
-- no-op ticks without writes
-- post-commit dispatch semantics
+Evaluation evidence is attempt-scoped to the newest Task for that Evaluation Issue. Approval evidence from a parked gate is hidden from the current attempt.
 
-### Concrete Policy projection reader
+### Mutation
 
-Implemented `MulticaPolicyProjectionReader`.
-
-It reconstructs a running Loop from durable state:
-
-```text
-Parent Issue metadata
-  → pinned template key/version/policy version
-Child Issues
-  → node key / role / assignee / status / retry count
-actual Child assignees
-  → RoleBindings
-pinned immutable template
-  → Compile()
-Evaluation/Approval repository
-  → gate state
-```
-
-A running Loop therefore never silently switches to a newly published template version.
-
-The projection also captures Parent and Child Issue revisions for stale-decision protection.
-
-### Concrete Policy mutation store
-
-Implemented `MulticaPolicyMutationStore` using existing Issue SQLC operations.
-
-Before mutation it:
+`MulticaPolicyMutationStore`:
 
 1. locks Parent Issue;
-2. verifies pinned `policy_version`;
-3. verifies expected Parent revision;
-4. locks every referenced Child Issue;
-5. verifies Parent/Child lineage and `node_key` metadata;
-6. verifies expected Child revisions;
-7. only then applies mutations.
+2. validates pinned policy version + expected Parent revision;
+3. locks all referenced Child Issues;
+4. validates Parent/Child/node-key lineage + expected revisions;
+5. applies all policy mutations atomically;
+6. commits;
+7. returns runnable Agent/Squad nodes for canonical post-commit dispatch.
 
-Supported durable mutations:
+Supported mutations:
 
-- activate node → `backlog → todo`
-- reopen node → increment workflow retry + `todo`
-- park node → `backlog`
-- request approval → activate Approval Issue + transactional approval hook
-- set Parent loop state
+- activate node
+- reopen node + increment workflow retry once
+- park node
+- request human approval
+- set Parent state
 - block Loop
-- complete Loop and mark Parent Issue done
+- complete Loop + mark Parent Issue done
 
-Runnable Agent/Squad nodes are returned as post-commit dispatch requests. Tasks are never created inside the mutation transaction.
+Task creation never occurs inside this transaction.
 
-Important recovery invariant fixed during concrete wiring:
+## 6. Concrete Evaluation path
 
-> Approval Issue must leave `backlog` when approval is requested; otherwise a later rejected Approval would look like stale evidence and be ignored by recovery policy.
+Implemented `RawEvaluationRepository`:
 
-### Stale projection guard
+- Task → Issue → Parent lineage resolution
+- rejects non-Loop child Tasks
+- rejects stale Tasks that are no longer the newest Task for the node
+- resolves current pinned Loop projection
+- verifies node→Issue mapping
+- persists normalized Evaluation
+- database uniqueness enforces one authoritative Evaluation per Task
+- duplicate delivery is accepted only when authoritative fields match exactly
 
-`PolicyProjection` now carries Issue revision snapshots into `PolicyMutationBatch`.
+Implemented `RawEvaluationEvidenceAuthorizer`:
 
-If another Task/policy/user mutation changes a referenced Issue between projection and write, the transaction rejects the decision with `ErrStalePolicyProjection` instead of re-opening or parking newer state.
+- every Evidence / Finding artifact ref must resolve to `loop_artifact`
+- same workspace + Parent Loop required
+- accepts registered artifact id, ref_id, or ref_uri
+- arbitrary unregistered URLs are not trusted as evidence
 
-### Evaluation Application Service
+Evaluation persistence is followed by the same deterministic Policy Tick.
+
+## 7. Concrete Human Approval path
+
+Implemented `MulticaApprovalRequester`:
+
+- pending Approval inserted inside the same transaction as gate activation
+- one pending record per node/key
+- repeat Policy Tick does not duplicate Approval or Inbox
+- Parent human creator is P0 fallback requested approver
+- `loop_approval_required` Inbox item is created atomically
+
+Implemented `MulticaApprovalRepository`:
+
+- loads authoritative Approval/Issue lineage
+- checks Approval key against node metadata
+- pending → approved/rejected only
+- `decided_by` is authenticated human identity
+- exact workspace/parent/node/key/policy lineage
+- exact idempotent replay only
+- marks Approval Issue done
+- archives matching Approval Inbox item in the same transaction
+
+Approval decision is then followed by Policy Tick.
+
+## 8. Template administration
+
+Implemented `TemplateAdminService` + `RawTemplateAdminRepository`:
+
+- create draft
+- update draft
+- publish draft
+- deterministic Template validation before persistence
+- advisory lock per `(workspace, template_key)`
+- serialized version allocation
+- atomic archive-current-active + publish-new-active
+
+HTTP contract:
+
+```text
+POST /api/loop-templates
+PUT  /api/loop-templates/{templateKey}/versions/{version}
+POST /api/loop-templates/{templateKey}/versions/{version}/publish
+```
+
+Template administration is human-only.
+
+## 9. Automatic Loop advancement
+
+Evaluation and Approval already invoke Policy Tick directly.
+
+Normal Product/Architecture/Backend/Frontend/Release nodes now also have an event-driven advancement bridge:
+
+```text
+issue:updated(status=done) ─┐
+                            ├→ verify Manifold child metadata
+ task:completed ────────────┘
+                                  ↓
+                         PolicyApplicationService.Tick(parent)
+```
+
+This uses Multica's existing synchronous post-commit `events.Bus`.
+
+Both events are intentionally observed because `CompleteTask()` does not itself mark the Issue done; Agents manage Issue status through the CLI. Policy Tick is idempotent, so whichever event arrives first may no-op and the other safely retries progression.
+
+## 10. HTTP application contract
 
 Implemented:
-
-`Task lineage → server-owned node/template context → structured validation → persistence → Policy Tick`
-
-The caller cannot choose authoritative node/template lineage independently of the Task.
-
-If Evaluation persistence succeeds but Policy Tick fails, the durable Evaluation is returned so retry continues control-plane advancement rather than creating a second authoritative result.
-
-### Human Approval Application Service
-
-Implemented:
-
-- pending approval lookup
-- `approved` / `rejected` only
-- authenticated human `decided_by`
-- requested approver enforcement when configured
-- persistence then Policy Tick
-- retry-safe partial-success semantics
-
-### HTTP contract
-
-Implemented `server/internal/loophttp`:
 
 ```text
 POST /api/loops
@@ -251,157 +288,100 @@ POST /api/tasks/{taskId}/loop-evaluation
 POST /api/loop-approvals/{approvalId}/decision
 ```
 
-Security semantics:
+Security properties:
 
-- Loop creation uses authenticated workspace context and trusted creator identity.
-- Task-token Evaluation requires server-stamped `X-Task-ID` to match URL Task ID.
-- Task-token Evaluation actor is server-stamped `X-Agent-ID`.
-- Human Evaluation/Approval uses authenticated `X-User-ID`.
-- Approval rejects machine actors.
-- unknown body fields are rejected.
-- duplicate Loop instance → `409`.
-- persisted Evaluation/Approval with failed Policy Tick → `202 Accepted`.
+- trusted workspace/actor headers come from existing Auth middleware
+- task token Evaluation must match its server-stamped Task ID
+- task token evaluator identity is server-stamped Agent ID
+- Human Approval rejects machine actors
+- unknown JSON fields are rejected
+- duplicate Loop → 409
+- durable Evaluation/Approval with subsequent Policy Tick failure → 202 Accepted
 
-The routes are intentionally not mounted in production until all persistence dependencies are available.
+`server/cmd/server/manifold_agent_routes.go` now assembles the concrete production dependency graph, including Template admin, Loop creation, Policy projection/mutation, Evaluation, Approval, evidence authorization and lifecycle event advancement.
 
-## 3. Still reused from Multica
+## 11. SQLC status
 
-Do not create parallel implementations for:
+Committed source files exist for:
 
-- Issue model
-- Task queue / Run history
-- Task retry
-- Runtime/Daemon selection
-- Agent/Squad identity
-- Skills
-- execution logs
-- cancellation
-- Inbox transport
-- VCS integration
+- `loop_template.sql`
+- `loop_evaluation.sql`
+- `loop_approval.sql`
+- `loop_artifact.sql`
+- `loop_issue.sql`
 
-Task Retry and Workflow Retry remain separate:
+Generated Loop Go files are still absent because this execution environment cannot resolve/download the pinned SQLC generator.
 
-```text
-Task Retry
-  transient CLI/runtime/transport failure
-  → existing Multica retry lineage
-
-Workflow Retry
-  successful execution but Review/Test/Approval rejects result
-  → Manifold Policy reopens responsible Issue
-  → canonical Multica dispatch creates a new Task
-```
-
-## 4. Current hard blocker: SQLC generation
-
-New Loop query source files are committed, but the corresponding generated Go files are still absent.
-
-In particular, the branch does not yet contain generated files such as:
-
-- `loop_template.sql.go`
-- `loop_evaluation.sql.go`
-- `loop_approval.sql.go`
-- `loop_artifact.sql.go`
-- `loop_issue.sql.go`
-
-Run in an environment that can resolve the pinned generator:
+Run in a normal development environment:
 
 ```bash
 make sqlc
 ```
 
-Do not manually edit files marked `Code generated by sqlc`.
+Do **not** manually edit files marked `Code generated by sqlc`.
 
-Because Issue graph and Policy Issue mutations now reuse existing generated Multica queries, this blocker has been narrowed to the new Loop tables rather than the whole runtime path.
+To keep P0 implementation moving, concrete adapters currently use raw PGX only for the new Loop tables while continuing to reuse existing generated Multica queries for Issue/Task/Inbox operations. These raw adapters are intentionally behind stable application interfaces and can later be replaced by generated SQLC implementations without changing the Loop engine.
 
-## 5. Remaining backend work
+## 12. Remaining backend integration work
 
-### A. Generate SQLC output
+### A. Physical production Router mount
 
-Run `make sqlc`, review generated changes, and commit them.
+The complete dependency bundle exists, but `router.go` still needs the small final mount because the current GitHub connector only supports whole-file replacement and `router.go` is a very large file; it was not safely overwritten merely to insert a few lines.
 
-### B. Template repository
+Required integration shape:
 
-Implement concrete SQLC adapter for:
-
-- exact version load
-- active version load
-- draft create/update
-- publish immutable version
-- archive prior active version
-
-This adapter will satisfy `PinnedLoopTemplateLoader`.
-
-### C. Evaluation / Approval / gate-state repositories
-
-Using generated Loop SQLC:
-
-- Task/Issue/Loop lineage lookup
-- idempotent Evaluation persistence
-- latest Evaluation projection
-- pending/decided Approval projection
-- transactional `EnsurePendingApproval`
-- Approval decision persistence
-- evidence/artifact authorization
-
-These adapters will satisfy `GateStateProjectionLoader` and `TransactionalApprovalRequester`.
-
-### D. Inbox integration
-
-On first pending Approval creation, create one human-attention Inbox item. Do not duplicate on policy retries.
-
-### E. Production router wiring
-
-Construct:
-
-```text
-Template repository
-        ↓
-InstantiateService
-        ↓
-MulticaIssueGraphStore
-        ↓
-DurableIssueGraphGateway
-
-PolicyProjectionReader
-        ↓
-PolicyApplicationService
-        ↓
-MulticaPolicyMutationStore
-        ↓
-DurablePolicyMutationSink
-
-EvaluationApplicationService
-ApprovalApplicationService
-        ↓
-loophttp.Handler
+```go
+manifoldRoutes := buildManifoldAgentRoutes(pool, queries, h)
 ```
 
-Mount inside the existing authenticated `RequireWorkspaceMember` group.
+Then, inside the existing authenticated `RequireWorkspaceMember(queries)` route group:
 
-### F. Automatic policy tick trigger
+```go
+registerManifoldAgentRoutes(r, manifoldRoutes)
+```
 
-Evaluation and Approval already trigger Policy Tick explicitly. Ordinary Agent-node completion also needs a Manifold hook so Product → Architecture → Dev stage advancement does not depend on a manual HTTP call.
+This is intentionally the existing Multica Auth + workspace boundary, not a second Manifold authentication system.
 
-The hook should recognize `manifold.loop.node_key` metadata on a completed child Issue and enqueue/reconcile a Policy Tick for its Parent Issue after the Task/Issue completion transaction commits.
+### B. Real build / test / migration verification
 
-## 6. Frontend / pilot
+This branch has been implemented through the GitHub connector and has not yet received a real Go compiler / PostgreSQL migration run in this environment.
 
-### MNL-011 — Loop UI
+Before calling the backend runnable:
 
-Web/Desktop:
+```bash
+cd server
+make sqlc
+go test ./internal/looptemplate/...
+go test ./internal/loopevaluation/...
+go test ./internal/looppolicy/...
+go test ./internal/loopservice/...
+go test ./internal/loophttp/...
+go test ./cmd/migrate/...
+go test ./cmd/server/...
+```
+
+Then apply migrations against a disposable PostgreSQL database and run one full Feature Development E2E.
+
+### C. Provenance write path
+
+Evidence authorization is implemented, but Artifact/provenance creation APIs still need to be wired so Commit/PR/Test/Build/Deployment references can be registered into `loop_artifact` without manual database writes.
+
+## 13. Frontend / pilot next
+
+### MNL-011 — Manifold Agent Loop UI
 
 - Loop list/detail
 - stage graph/timeline
 - current stage
-- node Agent/Task state
+- Agent/Task state per node
 - Evaluation findings
 - Approval card
-- workflow recovery history
+- workflow retry/recovery history
+- artifact/provenance panel
 
 ### MNL-012 — internal pilot
 
-Recommended first real pilot: MindCloudX token licensing or Odin safety workflow.
+Recommended first pilot: MindCloudX token licensing or Odin safety workflow.
 
 Measure separately:
 
@@ -412,7 +392,7 @@ Measure separately:
 - transient Task retry count
 - total Agent cost
 
-## 7. P0 done condition
+## 14. P0 done condition
 
 ```text
 Feature Intent
@@ -438,4 +418,4 @@ Release
 Loop Completed
 ```
 
-P0 is done only when this path runs against real Multica Issues/Tasks with deterministic routing, bounded workflow retry, explicit human authority, provenance, and existing Runtime/Daemon semantics.
+P0 is done only when this runs against real Multica Issues/Tasks with deterministic routing, bounded workflow retry, explicit human authority, provenance, and existing Runtime/Daemon semantics.
