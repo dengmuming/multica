@@ -9,19 +9,40 @@ import (
 	"github.com/multica-ai/multica/server/internal/loopservice"
 )
 
-type ArtifactRegistrar interface {
+type ArtifactService interface {
 	Register(context.Context, loopservice.RegisterArtifactRequest) (loopservice.RegisteredArtifact, error)
+	List(context.Context, string, string) ([]loopservice.RegisteredArtifact, error)
 }
 
 type ArtifactHandler struct {
-	Artifacts ArtifactRegistrar
+	Artifacts ArtifactService
 }
 
-func NewArtifactHandler(artifacts ArtifactRegistrar) *ArtifactHandler { return &ArtifactHandler{Artifacts: artifacts} }
+func NewArtifactHandler(artifacts ArtifactService) *ArtifactHandler { return &ArtifactHandler{Artifacts: artifacts} }
 
 func (h *ArtifactHandler) Register(r chi.Router) {
 	if h == nil || r == nil { return }
+	r.Get("/api/loops/{parentIssueId}/artifacts", h.ListArtifacts)
 	r.Post("/api/loops/{parentIssueId}/artifacts", h.RegisterArtifact)
+}
+
+func (h *ArtifactHandler) ListArtifacts(w http.ResponseWriter, r *http.Request) {
+	if h == nil || h.Artifacts == nil {
+		writeError(w, http.StatusServiceUnavailable, "loop artifact service is unavailable")
+		return
+	}
+	workspaceID := strings.TrimSpace(r.Header.Get("X-Workspace-ID"))
+	parentIssueID := strings.TrimSpace(chi.URLParam(r, "parentIssueId"))
+	if workspaceID == "" || parentIssueID == "" {
+		writeError(w, http.StatusBadRequest, "workspace and parent issue context are required")
+		return
+	}
+	artifacts, err := h.Artifacts.List(r.Context(), workspaceID, parentIssueID)
+	if err != nil {
+		writeError(w, classifyApplicationError(err), err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"artifacts": artifacts})
 }
 
 type artifactBody struct {
