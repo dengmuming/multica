@@ -29,6 +29,7 @@
     "./runtimes": "./runtimes/index.ts",
     "./billing": "./billing/index.ts",
     "./dashboard": "./dashboard/index.ts",
+    "./loops": "./loops/index.ts",
     "./squads": "./squads/index.ts",
     "./squads/components": "./squads/components/index.ts",
     "./workspace/workspace-avatar": "./workspace/workspace-avatar.tsx",
@@ -73,7 +74,6 @@
     "@tiptap/extension-image": "3.27.1",
     "@tiptap/extension-link": "3.27.1",
     "@tiptap/extension-list": "3.27.1",
-    "@tiptap/extension-mention": "3.27.1",
     "@tiptap/extension-paragraph": "3.27.1",
     "@tiptap/extension-placeholder": "3.27.1",
     "@tiptap/extension-table": "3.27.1",
@@ -109,7 +109,7 @@
     "remark-gfm": "^4.0.1",
     "remark-math": "catalog:",
     "sonner": "^2.0.7",
-    "unist-util-visit": "^5.1.0"
+    "unist-util-visit": "^5.0.0"
   },
   "peerDependencies": {
     "@tanstack/react-query": "catalog:",
@@ -129,7 +129,7 @@
     "@testing-library/react": "catalog:",
     "@testing-library/user-event": "catalog:",
     "@types/hast": "^3.0.4",
-    "@types/mdast": "^4.0.4",
+    "@types/mdast": "^3.0.4",
     "@types/react": "catalog:",
     "@types/react-dom": "catalog:",
     "@typescript-eslint/parser": "^8.35.0",
