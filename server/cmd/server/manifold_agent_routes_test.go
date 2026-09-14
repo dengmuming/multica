@@ -30,6 +30,7 @@ func TestRegisterManifoldAgentRoutesPinsP0Surface(t *testing.T) {
 	want := []string{
 		"GET /api/loops",
 		"GET /api/loops/{parentIssueId}",
+		"GET /api/loops/{parentIssueId}/artifacts",
 		"POST /api/loop-approvals/{approvalId}/decision",
 		"POST /api/loop-templates",
 		"POST /api/loop-templates/{templateKey}/versions/{version}/publish",
