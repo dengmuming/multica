@@ -7,9 +7,10 @@ export {
   findingsForLoop,
   groupLoopNodesByStage,
   nodeIsSatisfied,
+  requiredLoopProgress,
   workflowRetryTotal,
 } from "./loop-utils";
-export type { LoopStageView } from "./loop-utils";
+export type { LoopStageState, LoopStageView } from "./loop-utils";
 export type {
   LoopArtifactView,
   LoopDetailView,
