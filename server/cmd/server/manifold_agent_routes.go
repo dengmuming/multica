@@ -9,12 +9,17 @@ import (
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
-// buildManifoldAgentLoopHandler wires the P0 Manifold Agent Native Loop onto
+type manifoldAgentRouteBundle struct {
+	Loop      *loophttp.Handler
+	Templates *loophttp.TemplateHandler
+}
+
+// buildManifoldAgentRoutes wires the P0 Manifold Agent Native Loop onto
 // Multica's existing Issue/Task/Runtime control plane. Keeping assembly in a
 // small file prevents router.go from becoming the composition root for every
 // loop implementation detail and makes the temporary raw-PGX adapters easy to
 // replace with generated SQLC repositories later.
-func buildManifoldAgentLoopHandler(pool *pgxpool.Pool, queries *db.Queries, h *handler.Handler) *loophttp.Handler {
+func buildManifoldAgentRoutes(pool *pgxpool.Pool, queries *db.Queries, h *handler.Handler) *manifoldAgentRouteBundle {
 	if pool == nil || queries == nil || h == nil || h.IssueService == nil {
 		return nil
 	}
@@ -47,17 +52,28 @@ func buildManifoldAgentLoopHandler(pool *pgxpool.Pool, queries *db.Queries, h *h
 	approvals := loopservice.NewMulticaApprovalRepository(h.IssueService)
 	approvalApp := loopservice.NewApprovalApplicationService(approvals, approvals, policy)
 
-	return loophttp.New(instantiator, evaluationApp, approvalApp)
+	templateAdminRepo := loopservice.NewRawTemplateAdminRepository(h.IssueService)
+	templateAdmin := loopservice.NewTemplateAdminService(templateAdminRepo)
+
+	return &manifoldAgentRouteBundle{
+		Loop:      loophttp.New(instantiator, evaluationApp, approvalApp),
+		Templates: loophttp.NewTemplateHandler(templateAdmin),
+	}
 }
 
-// registerManifoldAgentLoopRoutes must be called from the authenticated,
+// registerManifoldAgentRoutes must be called from the authenticated,
 // RequireWorkspaceMember-protected router group. Auth task tokens stamp both
 // X-User-ID and X-Workspace-ID, so evaluator Agents use the same workspace
-// membership boundary as humans while ApprovalApplicationService still rejects
-// machine actors.
-func registerManifoldAgentLoopRoutes(r chi.Router, loopHandler *loophttp.Handler) {
-	if r == nil || loopHandler == nil {
+// membership boundary as humans while Approval/Template handlers still reject
+// machine actors for human-authority operations.
+func registerManifoldAgentRoutes(r chi.Router, bundle *manifoldAgentRouteBundle) {
+	if r == nil || bundle == nil {
 		return
 	}
-	loopHandler.Register(r)
+	if bundle.Loop != nil {
+		bundle.Loop.Register(r)
+	}
+	if bundle.Templates != nil {
+		bundle.Templates.Register(r)
+	}
 }
