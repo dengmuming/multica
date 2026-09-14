@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -244,5 +243,3 @@ func (r *RawLoopReadRepository) loadLoopNodes(ctx context.Context, workspaceID, 
 	}
 	return out, nil
 }
-
-var _ time.Time
