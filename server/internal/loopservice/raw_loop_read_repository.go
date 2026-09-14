@@ -2,12 +2,14 @@ package loopservice
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/loopevaluation"
 )
 
 type RawLoopReadRepository struct {
@@ -166,9 +168,15 @@ func (r *RawLoopReadRepository) loadLoopNodes(ctx context.Context, workspaceID, 
 		       i.assignee_id,
 		       latest_task.id,
 		       COALESCE(latest_task.status, ''),
+		       current_eval.id,
 		       COALESCE(current_eval.verdict, ''),
 		       COALESCE(current_eval.policy_target_node_key, ''),
-		       COALESCE(current_approval.state, '')
+		       COALESCE(current_eval.findings, '[]'::jsonb),
+		       COALESCE(current_eval.evidence, '[]'::jsonb),
+		       current_approval.id,
+		       COALESCE(current_approval.state, ''),
+		       current_approval.requested_from_id,
+		       COALESCE(current_approval.rationale, '')
 		FROM issue i
 		LEFT JOIN LATERAL (
 			SELECT t.id, t.status
@@ -178,7 +186,7 @@ func (r *RawLoopReadRepository) loadLoopNodes(ctx context.Context, workspaceID, 
 			LIMIT 1
 		) latest_task ON true
 		LEFT JOIN LATERAL (
-			SELECT e.verdict, e.policy_target_node_key
+			SELECT e.id, e.verdict, e.policy_target_node_key, e.findings, e.evidence
 			FROM loop_evaluation e
 			WHERE e.workspace_id = i.workspace_id
 			  AND e.parent_issue_id = i.parent_issue_id
@@ -189,7 +197,7 @@ func (r *RawLoopReadRepository) loadLoopNodes(ctx context.Context, workspaceID, 
 			LIMIT 1
 		) current_eval ON true
 		LEFT JOIN LATERAL (
-			SELECT a.state
+			SELECT a.id, a.state, a.requested_from_id, a.rationale
 			FROM loop_approval a
 			WHERE a.workspace_id = i.workspace_id
 			  AND a.parent_issue_id = i.parent_issue_id
@@ -209,7 +217,8 @@ func (r *RawLoopReadRepository) loadLoopNodes(ctx context.Context, workspaceID, 
 
 	out := make([]LoopNodeRead, 0)
 	for rows.Next() {
-		var issueID, assigneeID, taskID pgtype.UUID
+		var issueID, assigneeID, taskID, evaluationID, approvalID, requestedFromID pgtype.UUID
+		var findingsJSON, evidenceJSON []byte
 		var node LoopNodeRead
 		if err := rows.Scan(
 			&issueID,
@@ -227,15 +236,42 @@ func (r *RawLoopReadRepository) loadLoopNodes(ctx context.Context, workspaceID, 
 			&assigneeID,
 			&taskID,
 			&node.LatestTaskStatus,
+			&evaluationID,
 			&node.EvaluationVerdict,
 			&node.EvaluationTarget,
+			&findingsJSON,
+			&evidenceJSON,
+			&approvalID,
 			&node.ApprovalState,
+			&requestedFromID,
+			&node.ApprovalRationale,
 		); err != nil {
 			return nil, fmt.Errorf("scan loop node: %w", err)
 		}
 		node.IssueID = uuidString(issueID)
 		node.AssigneeID = uuidString(assigneeID)
 		node.LatestTaskID = uuidString(taskID)
+		node.EvaluationID = uuidString(evaluationID)
+		node.ApprovalID = uuidString(approvalID)
+		node.ApprovalRequestedFromID = uuidString(requestedFromID)
+		if len(findingsJSON) > 0 {
+			if err := json.Unmarshal(findingsJSON, &node.EvaluationFindings); err != nil {
+				return nil, fmt.Errorf("decode evaluation findings for node %q: %w", node.NodeKey, err)
+			}
+		}
+		if len(evidenceJSON) > 0 {
+			if err := json.Unmarshal(evidenceJSON, &node.EvaluationEvidence); err != nil {
+				return nil, fmt.Errorf("decode evaluation evidence for node %q: %w", node.NodeKey, err)
+			}
+		}
+		// Preserve stable empty arrays for JSON clients rather than returning
+		// null when the current gate has no findings/evidence.
+		if node.EvaluationFindings == nil {
+			node.EvaluationFindings = []loopevaluation.Finding{}
+		}
+		if node.EvaluationEvidence == nil {
+			node.EvaluationEvidence = []string{}
+		}
 		out = append(out, node)
 	}
 	if err := rows.Err(); err != nil {
