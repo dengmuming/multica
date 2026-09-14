@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 )
 
 var allowedLoopArtifactTypes = map[string]bool{
@@ -71,10 +72,12 @@ type RegisteredArtifact struct {
 	Metadata      map[string]any `json:"metadata"`
 	CreatedByType string         `json:"created_by_type"`
 	CreatedByID   string         `json:"created_by_id,omitempty"`
+	CreatedAt     time.Time      `json:"created_at"`
 }
 
 type ArtifactRepository interface {
 	RegisterArtifact(ctx context.Context, cmd RegisterArtifactCommand) (RegisteredArtifact, error)
+	ListArtifacts(ctx context.Context, workspaceID, parentIssueID string) ([]RegisteredArtifact, error)
 	ResolveAgentTaskArtifactContext(ctx context.Context, workspaceID, parentIssueID, taskID, agentID string) (nodeIssueID string, err error)
 	ValidateHumanArtifactContext(ctx context.Context, workspaceID, parentIssueID, nodeIssueID, taskID string) error
 }
@@ -138,6 +141,21 @@ func (s *ArtifactApplicationService) Register(ctx context.Context, req RegisterA
 		RefKind: req.RefKind, RefID: req.RefID, RefURI: req.RefURI,
 		Metadata: cloneAnyMap(req.Metadata), CreatedByType: req.ActorType, CreatedByID: req.ActorID,
 	})
+}
+
+func (s *ArtifactApplicationService) List(ctx context.Context, workspaceID, parentIssueID string) ([]RegisteredArtifact, error) {
+	if s == nil || s.repo == nil {
+		return nil, errors.New("artifact repository is required")
+	}
+	workspaceID = strings.TrimSpace(workspaceID)
+	parentIssueID = strings.TrimSpace(parentIssueID)
+	if workspaceID == "" || parentIssueID == "" {
+		return nil, errors.New("workspace and parent issue id are required")
+	}
+	if err := s.repo.ValidateHumanArtifactContext(ctx, workspaceID, parentIssueID, "", ""); err != nil {
+		return nil, err
+	}
+	return s.repo.ListArtifacts(ctx, workspaceID, parentIssueID)
 }
 
 func trimArtifactRequest(req *RegisterArtifactRequest) {
