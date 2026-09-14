@@ -48,10 +48,15 @@ func (h *ArtifactHandler) RegisterArtifact(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	source := strings.TrimSpace(r.Header.Get("X-Actor-Source"))
+	if source == "cloud_pat" {
+		writeError(w, http.StatusForbidden, "cloud machine credentials cannot author loop artifacts")
+		return
+	}
 	actorType := "member"
 	actorID := strings.TrimSpace(r.Header.Get("X-User-ID"))
 	authTaskID := ""
-	if strings.TrimSpace(r.Header.Get("X-Actor-Source")) == "task_token" {
+	if source == "task_token" {
 		actorType = "agent"
 		actorID = strings.TrimSpace(r.Header.Get("X-Agent-ID"))
 		authTaskID = strings.TrimSpace(r.Header.Get("X-Task-ID"))
