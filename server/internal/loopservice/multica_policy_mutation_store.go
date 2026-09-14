@@ -16,12 +16,11 @@ import (
 var ErrStalePolicyProjection = errors.New("stale loop policy projection")
 
 // TransactionalApprovalRequester is the narrow bridge to loop_approval. The
-// implementation must use qtx so the pending approval is committed atomically
-// with the Issue state transition. The SQLC-backed implementation can be added
-// once the new loop queries are generated; the Issue mutation store itself does
-// not need to wait for generated loop table code.
+// requester receives the same pgx transaction used for Issue mutations so a
+// pending approval + optional Inbox item commit atomically with the gate state.
+// qtx is supplied as well for reuse of existing generated Multica queries.
 type TransactionalApprovalRequester interface {
-	EnsurePendingApproval(ctx context.Context, qtx *db.Queries, req PendingApprovalRequest) error
+	EnsurePendingApproval(ctx context.Context, tx pgx.Tx, qtx *db.Queries, req PendingApprovalRequest) error
 }
 
 type PendingApprovalRequest struct {
@@ -31,6 +30,7 @@ type PendingApprovalRequest struct {
 	ApprovalKey   string
 	PolicyVersion string
 	Reason        string
+	FallbackRecipientID pgtype.UUID
 }
 
 // MulticaPolicyMutationStore applies one deterministic policy decision against
@@ -187,9 +187,14 @@ func (s *MulticaPolicyMutationStore) ApplyMutationBatchAtomically(ctx context.Co
 					return PolicyMutationCommit{}, fmt.Errorf("activate approval node %q: %w", mutation.NodeKey, err)
 				}
 			}
-			if err := s.approvals.EnsurePendingApproval(ctx, qtx, PendingApprovalRequest{
+			fallbackRecipient := pgtype.UUID{}
+			if parent.CreatorType == "member" && parent.CreatorID.Valid {
+				fallbackRecipient = parent.CreatorID
+			}
+			if err := s.approvals.EnsurePendingApproval(ctx, tx, qtx, PendingApprovalRequest{
 				WorkspaceID: workspaceID, ParentIssueID: parentID, NodeIssueID: issue.ID,
 				ApprovalKey: mutation.NodeKey, PolicyVersion: batch.PolicyVersion, Reason: mutation.Reason,
+				FallbackRecipientID: fallbackRecipient,
 			}); err != nil {
 				return PolicyMutationCommit{}, fmt.Errorf("request approval for %q: %w", mutation.NodeKey, err)
 			}
