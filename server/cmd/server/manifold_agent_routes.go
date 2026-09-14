@@ -11,6 +11,7 @@ import (
 
 type manifoldAgentRouteBundle struct {
 	Loop      *loophttp.Handler
+	Read      *loophttp.ReadHandler
 	Templates *loophttp.TemplateHandler
 	Artifacts *loophttp.ArtifactHandler
 }
@@ -64,8 +65,11 @@ func buildManifoldAgentRoutes(pool *pgxpool.Pool, queries *db.Queries, h *handle
 	artifacts := loopservice.NewRawArtifactRepository(pool)
 	artifactApp := loopservice.NewArtifactApplicationService(artifacts)
 
+	loopReads := loopservice.NewLoopReadService(loopservice.NewRawLoopReadRepository(pool))
+
 	return &manifoldAgentRouteBundle{
 		Loop:      loophttp.New(instantiator, evaluationApp, approvalApp),
+		Read:      loophttp.NewReadHandler(loopReads),
 		Templates: loophttp.NewTemplateHandler(templateAdmin),
 		Artifacts: loophttp.NewArtifactHandler(artifactApp),
 	}
@@ -82,6 +86,9 @@ func registerManifoldAgentRoutes(r chi.Router, bundle *manifoldAgentRouteBundle)
 	}
 	if bundle.Loop != nil {
 		bundle.Loop.Register(r)
+	}
+	if bundle.Read != nil {
+		bundle.Read.Register(r)
 	}
 	if bundle.Templates != nil {
 		bundle.Templates.Register(r)
