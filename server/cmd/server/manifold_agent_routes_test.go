@@ -13,6 +13,7 @@ func TestRegisterManifoldAgentRoutesPinsP0Surface(t *testing.T) {
 	r := chi.NewRouter()
 	registerManifoldAgentRoutes(r, &manifoldAgentRouteBundle{
 		Loop:      &loophttp.Handler{},
+		Read:      &loophttp.ReadHandler{},
 		Templates: &loophttp.TemplateHandler{},
 		Artifacts: &loophttp.ArtifactHandler{},
 	})
@@ -27,6 +28,8 @@ func TestRegisterManifoldAgentRoutesPinsP0Surface(t *testing.T) {
 	sort.Strings(got)
 
 	want := []string{
+		"GET /api/loops",
+		"GET /api/loops/{parentIssueId}",
 		"POST /api/loop-approvals/{approvalId}/decision",
 		"POST /api/loop-templates",
 		"POST /api/loop-templates/{templateKey}/versions/{version}/publish",
