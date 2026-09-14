@@ -72,7 +72,7 @@ func Evaluate(plan looptemplate.CompiledPlan, state RuntimeState) (Decision, err
 		}
 	}
 
-	if state.ParentState == "cancelled" || state.ParentState == "completed" || state.ParentState == "failed" {
+	if state.ParentState == "cancelled" || state.ParentState == "completed" || state.ParentState == "failed" || state.ParentState == "blocked" {
 		return Decision{Reason: "parent_terminal"}, nil
 	}
 
