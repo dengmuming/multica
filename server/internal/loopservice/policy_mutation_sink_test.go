@@ -64,6 +64,30 @@ func TestBuildPolicyMutationBatchMapsRecoveryActions(t *testing.T) {
 	}
 }
 
+func TestBuildPolicyMutationBatchCarriesRevisionGuards(t *testing.T) {
+	parentRevision := int64(9)
+	cmd := policyCommand(looppolicy.Action{Type: looppolicy.ActionActivateNode, NodeKey: "backend"})
+	cmd.ExpectedParentRevision = &parentRevision
+	cmd.ExpectedNodeRevisions = map[string]int64{"backend": 12}
+
+	batch, err := BuildPolicyMutationBatch(cmd)
+	if err != nil {
+		t.Fatalf("BuildPolicyMutationBatch() error = %v", err)
+	}
+	if batch.ExpectedParentRevision == nil || *batch.ExpectedParentRevision != 9 {
+		t.Fatalf("parent revision = %#v", batch.ExpectedParentRevision)
+	}
+	if batch.ExpectedNodeRevisions["backend"] != 12 {
+		t.Fatalf("node revisions = %#v", batch.ExpectedNodeRevisions)
+	}
+	// The batch owns its snapshot; later caller mutation must not change it.
+	parentRevision = 99
+	cmd.ExpectedNodeRevisions["backend"] = 99
+	if *batch.ExpectedParentRevision != 9 || batch.ExpectedNodeRevisions["backend"] != 12 {
+		t.Fatalf("batch revision guards alias caller state: %#v", batch)
+	}
+}
+
 func TestBuildPolicyMutationBatchRejectsMissingNodeIssue(t *testing.T) {
 	_, err := BuildPolicyMutationBatch(ApplyPolicyDecisionCommand{
 		WorkspaceID: "workspace-1", ParentIssueID: "parent-1", PolicyVersion: "policy-v1",
