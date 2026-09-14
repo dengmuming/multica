@@ -1,6 +1,6 @@
 "use client";
 
-import { CheckCircle2, CircleDashed, TriangleAlert } from "lucide-react";
+import { CheckCircle2, CircleDashed, ShieldCheck, TriangleAlert } from "lucide-react";
 import { cn } from "@multica/ui/lib/utils";
 import type { LoopListCopy, LoopSummaryView } from "../types";
 
@@ -62,6 +62,7 @@ export function LoopList({
 
 function LoopStateIcon({ state }: { state: string }) {
   if (state === "completed") return <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-500" aria-hidden="true" />;
+  if (state === "waiting_approval") return <ShieldCheck className="h-5 w-5 shrink-0 text-amber-500" aria-hidden="true" />;
   if (state === "blocked" || state === "failed") return <TriangleAlert className="h-5 w-5 shrink-0 text-destructive" aria-hidden="true" />;
   return <CircleDashed className="h-5 w-5 shrink-0 text-muted-foreground" aria-hidden="true" />;
 }
