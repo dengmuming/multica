@@ -20,6 +20,13 @@ type PolicyProjection struct {
 	Plan          looptemplate.CompiledPlan
 	Runtime       looppolicy.RuntimeState
 	NodeIssueIDs  map[string]string
+
+	// Revision snapshots protect the write phase from a stale projection. A
+	// concrete reader should populate these from the same Issue rows used to
+	// build Runtime. The mutation store locks rows and verifies the snapshots
+	// before applying any state change.
+	ExpectedParentRevision *int64
+	ExpectedNodeRevisions  map[string]int64
 }
 
 // PolicyProjectionReader loads the pinned template projection for one loop
@@ -49,6 +56,9 @@ type ApplyPolicyDecisionCommand struct {
 	NodeIssueIDs  map[string]string
 	Actions       []looppolicy.Action
 	Reason        string
+
+	ExpectedParentRevision *int64
+	ExpectedNodeRevisions  map[string]int64
 }
 
 type PolicyTickResult struct {
@@ -95,12 +105,14 @@ func (s *PolicyApplicationService) Tick(ctx context.Context, parentIssueID strin
 	}
 
 	cmd := ApplyPolicyDecisionCommand{
-		WorkspaceID:   projection.WorkspaceID,
-		ParentIssueID: projection.ParentIssueID,
-		PolicyVersion: projection.PolicyVersion,
-		NodeIssueIDs:  cloneStringMap(projection.NodeIssueIDs),
-		Actions:       clonePolicyActions(decision.Actions),
-		Reason:        decision.Reason,
+		WorkspaceID:             projection.WorkspaceID,
+		ParentIssueID:           projection.ParentIssueID,
+		PolicyVersion:           projection.PolicyVersion,
+		NodeIssueIDs:            cloneStringMap(projection.NodeIssueIDs),
+		Actions:                 clonePolicyActions(decision.Actions),
+		Reason:                  decision.Reason,
+		ExpectedParentRevision:  cloneInt64Ptr(projection.ExpectedParentRevision),
+		ExpectedNodeRevisions:   cloneInt64Map(projection.ExpectedNodeRevisions),
 	}
 	if err := validatePolicyActions(projection.Plan, cmd); err != nil {
 		return PolicyTickResult{}, err
@@ -178,4 +190,23 @@ func clonePolicyActions(in []looppolicy.Action) []looppolicy.Action {
 	out := make([]looppolicy.Action, len(in))
 	copy(out, in)
 	return out
+}
+
+func cloneInt64Map(in map[string]int64) map[string]int64 {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]int64, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
+}
+
+func cloneInt64Ptr(in *int64) *int64 {
+	if in == nil {
+		return nil
+	}
+	value := *in
+	return &value
 }
