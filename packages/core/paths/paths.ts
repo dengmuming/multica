@@ -20,7 +20,7 @@ const encode = (id: string) => encodeURIComponent(id);
  * vocabulary: `agentConversationStarters()` writes it and the tab reads it,
  * and a shared constant is what stops the two from drifting apart.
  */
-export const AGENT_FOCUS_CONVERSATION_STARTERS = "conversation_starters";
+export const AGENT_FOCUS_CONVERSATION_STARTERS = "conversation-starters";
 
 function workspaceScoped(slug: string) {
   const ws = `/${encode(slug)}`;
@@ -31,6 +31,8 @@ function workspaceScoped(slug: string) {
     issueDetail: (id: string) => `${ws}/issues/${encode(id)}`,
     projects: () => `${ws}/projects`,
     projectDetail: (id: string) => `${ws}/projects/${encode(id)}`,
+    loops: () => `${ws}/loops`,
+    loopDetail: (parentIssueId: string) => `${ws}/loops/${encode(parentIssueId)}`,
     autopilots: () => `${ws}/autopilots`,
     autopilotDetail: (id: string) => `${ws}/autopilots/${encode(id)}`,
     agents: () => `${ws}/agents`,
