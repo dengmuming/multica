@@ -1,3 +1,5 @@
+export { LoopsPage } from "./components/loops-page";
+export { LoopDetailPage } from "./components/loop-detail-page";
 export { LoopList } from "./components/loop-list";
 export type { LoopListProps } from "./components/loop-list";
 export { LoopDetailPanel } from "./components/loop-detail-panel";
