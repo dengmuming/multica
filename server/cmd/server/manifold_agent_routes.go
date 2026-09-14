@@ -45,6 +45,11 @@ func buildManifoldAgentRoutes(pool *pgxpool.Pool, queries *db.Queries, h *handle
 	mutationSink := loopservice.NewDurablePolicyMutationSink(mutationStore, dispatcher)
 	policy := loopservice.NewPolicyApplicationService(projection, mutationSink)
 
+	// Close the ordinary node-completion path: Issue done / Task completed
+	// lifecycle events drive the same idempotent server-owned policy Tick used
+	// by Evaluation and Approval submissions.
+	registerManifoldAgentPolicyEvents(h.Bus, queries, policy)
+
 	evaluations := loopservice.NewRawEvaluationRepository(pool, projection)
 	evidence := loopservice.NewRawEvaluationEvidenceAuthorizer(pool)
 	evaluationApp := loopservice.NewEvaluationApplicationService(evaluations, evidence, evaluations, policy)
