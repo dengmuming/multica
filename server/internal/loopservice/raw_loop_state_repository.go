@@ -144,8 +144,7 @@ func (r *RawLoopStateRepository) loadCurrentEvaluationStates(
 		JOIN LATERAL (
 			SELECT t.id
 			FROM agent_task_queue t
-			WHERE t.workspace_id = e.workspace_id
-			  AND t.issue_id = e.node_issue_id
+			WHERE t.issue_id = e.node_issue_id
 			ORDER BY t.created_at DESC, t.id DESC
 			LIMIT 1
 		) latest ON latest.id = e.task_id
