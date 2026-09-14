@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -112,22 +113,72 @@ func (r *RawArtifactRepository) RegisterArtifact(ctx context.Context, cmd Regist
 	if err != nil { return RegisteredArtifact{}, fmt.Errorf("encode artifact metadata: %w", err) }
 
 	var artifactID pgtype.UUID
+	var createdAt time.Time
 	err = r.db.QueryRow(ctx, `
 		INSERT INTO loop_artifact (
 			workspace_id,parent_issue_id,node_issue_id,task_id,
 			artifact_type,relation,title,ref_kind,ref_id,ref_uri,metadata,
 			created_by_type,created_by_id
 		) VALUES ($1,$2,$3,$4,$5,$6,NULLIF($7,''),$8,$9,NULLIF($10,''),$11,$12,$13)
-		RETURNING id`,
+		RETURNING id, created_at`,
 		wid,pid,nid,tid,cmd.ArtifactType,cmd.Relation,cmd.Title,cmd.RefKind,refID,cmd.RefURI,metadataJSON,cmd.CreatedByType,creatorID,
-	).Scan(&artifactID)
+	).Scan(&artifactID, &createdAt)
 	if err != nil { return RegisteredArtifact{}, fmt.Errorf("insert loop artifact: %w", err) }
 	return RegisteredArtifact{
 		ID: uuidString(artifactID), WorkspaceID: cmd.WorkspaceID, ParentIssueID: cmd.ParentIssueID,
 		NodeIssueID: cmd.NodeIssueID, TaskID: cmd.TaskID, ArtifactType: cmd.ArtifactType,
 		Relation: cmd.Relation, Title: cmd.Title, RefKind: cmd.RefKind, RefID: cmd.RefID,
 		RefURI: cmd.RefURI, Metadata: cloneAnyMap(cmd.Metadata), CreatedByType: cmd.CreatedByType, CreatedByID: cmd.CreatedByID,
+		CreatedAt: createdAt,
 	}, nil
+}
+
+func (r *RawArtifactRepository) ListArtifacts(ctx context.Context, workspaceID, parentIssueID string) ([]RegisteredArtifact, error) {
+	if r == nil || r.db == nil { return nil, errors.New("artifact database is required") }
+	wid, err := parseRequiredUUID("workspace id", workspaceID)
+	if err != nil { return nil, err }
+	pid, err := parseRequiredUUID("parent issue id", parentIssueID)
+	if err != nil { return nil, err }
+
+	rows, err := r.db.Query(ctx, `
+		SELECT id, node_issue_id, task_id, artifact_type, relation,
+		       COALESCE(title, ''), ref_kind, ref_id, COALESCE(ref_uri, ''),
+		       metadata, created_by_type, created_by_id, created_at
+		FROM loop_artifact
+		WHERE workspace_id=$1 AND parent_issue_id=$2
+		ORDER BY created_at DESC, id DESC`, wid, pid)
+	if err != nil { return nil, fmt.Errorf("list loop artifacts: %w", err) }
+	defer rows.Close()
+
+	out := make([]RegisteredArtifact, 0)
+	for rows.Next() {
+		var id, nodeID, taskID, refID, creatorID pgtype.UUID
+		var metadataJSON []byte
+		var artifact RegisteredArtifact
+		if err := rows.Scan(
+			&id, &nodeID, &taskID, &artifact.ArtifactType, &artifact.Relation,
+			&artifact.Title, &artifact.RefKind, &refID, &artifact.RefURI,
+			&metadataJSON, &artifact.CreatedByType, &creatorID, &artifact.CreatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan loop artifact: %w", err)
+		}
+		artifact.ID = uuidString(id)
+		artifact.WorkspaceID = workspaceID
+		artifact.ParentIssueID = parentIssueID
+		artifact.NodeIssueID = uuidString(nodeID)
+		artifact.TaskID = uuidString(taskID)
+		artifact.RefID = uuidString(refID)
+		artifact.CreatedByID = uuidString(creatorID)
+		if len(metadataJSON) > 0 {
+			if err := json.Unmarshal(metadataJSON, &artifact.Metadata); err != nil {
+				return nil, fmt.Errorf("decode loop artifact metadata %s: %w", artifact.ID, err)
+			}
+		}
+		if artifact.Metadata == nil { artifact.Metadata = map[string]any{} }
+		out = append(out, artifact)
+	}
+	if err := rows.Err(); err != nil { return nil, fmt.Errorf("iterate loop artifacts: %w", err) }
+	return out, nil
 }
 
 func isLoopParentMetadata(raw []byte) bool {
