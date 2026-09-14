@@ -12,6 +12,7 @@ import (
 type manifoldAgentRouteBundle struct {
 	Loop      *loophttp.Handler
 	Templates *loophttp.TemplateHandler
+	Artifacts *loophttp.ArtifactHandler
 }
 
 // buildManifoldAgentRoutes wires the P0 Manifold Agent Native Loop onto
@@ -60,9 +61,13 @@ func buildManifoldAgentRoutes(pool *pgxpool.Pool, queries *db.Queries, h *handle
 	templateAdminRepo := loopservice.NewRawTemplateAdminRepository(h.IssueService)
 	templateAdmin := loopservice.NewTemplateAdminService(templateAdminRepo)
 
+	artifacts := loopservice.NewRawArtifactRepository(pool)
+	artifactApp := loopservice.NewArtifactApplicationService(artifacts)
+
 	return &manifoldAgentRouteBundle{
 		Loop:      loophttp.New(instantiator, evaluationApp, approvalApp),
 		Templates: loophttp.NewTemplateHandler(templateAdmin),
+		Artifacts: loophttp.NewArtifactHandler(artifactApp),
 	}
 }
 
@@ -80,5 +85,8 @@ func registerManifoldAgentRoutes(r chi.Router, bundle *manifoldAgentRouteBundle)
 	}
 	if bundle.Templates != nil {
 		bundle.Templates.Register(r)
+	}
+	if bundle.Artifacts != nil {
+		bundle.Artifacts.Register(r)
 	}
 }
