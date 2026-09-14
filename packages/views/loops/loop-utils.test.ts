@@ -3,6 +3,7 @@ import {
   currentLoopStage,
   groupLoopNodesByStage,
   nodeIsSatisfied,
+  requiredLoopProgress,
   workflowRetryTotal,
 } from "./loop-utils";
 import type { LoopDetailView, LoopNodeView } from "./types";
@@ -43,13 +44,14 @@ describe("loop stage projection", () => {
     const stages = groupLoopNodesByStage([
       node({ node_key: "review", stage: 40 }),
       node({ node_key: "frontend", stage: 30, status: "todo" }),
-      node({ node_key: "backend", stage: 30, status: "done" }),
+      node({ node_key: "backend", stage: 30, status: "in_progress" }),
     ]);
 
     expect(stages.map((stage) => stage.stage)).toEqual([30, 40]);
     expect(stages[0]?.nodes.map((item) => item.node_key)).toEqual(["backend", "frontend"]);
     expect(stages[0]?.active).toBe(true);
     expect(stages[0]?.satisfied).toBe(false);
+    expect(stages[0]?.state).toBe("running");
   });
 
   it("uses authoritative evaluation and approval state for satisfaction", () => {
@@ -67,6 +69,32 @@ describe("loop stage projection", () => {
     ).toBe(true);
   });
 
+  it("surfaces evaluation fail and pending approval as explicit stage states", () => {
+    const failed = groupLoopNodesByStage([
+      node({
+        node_key: "test",
+        node_type: "evaluation",
+        status: "done",
+        stage: 50,
+        evaluation_verdict: "fail",
+      }),
+    ]);
+    const approval = groupLoopNodesByStage([
+      node({
+        node_key: "approval",
+        node_type: "approval",
+        status: "todo",
+        stage: 60,
+        approval_state: "pending",
+      }),
+    ]);
+
+    expect(failed[0]?.state).toBe("failed");
+    expect(failed[0]?.hasEvaluationFailure).toBe(true);
+    expect(approval[0]?.state).toBe("waiting_approval");
+    expect(approval[0]?.hasPendingApproval).toBe(true);
+  });
+
   it("returns the first unsatisfied stage and sums workflow retries", () => {
     const value = loop([
       node({ node_key: "product", stage: 10, status: "done", retry_count: 0 }),
@@ -76,5 +104,28 @@ describe("loop stage projection", () => {
 
     expect(currentLoopStage(value)).toBe(30);
     expect(workflowRetryTotal(value)).toBe(3);
+  });
+
+  it("counts progress using only required nodes and gate semantics", () => {
+    const value = loop([
+      node({ node_key: "product", stage: 10, status: "done" }),
+      node({ node_key: "embedded", stage: 30, status: "backlog", required: false }),
+      node({
+        node_key: "review",
+        stage: 40,
+        node_type: "evaluation",
+        status: "done",
+        evaluation_verdict: "warn",
+      }),
+      node({
+        node_key: "approval",
+        stage: 60,
+        node_type: "approval",
+        status: "todo",
+        approval_state: "pending",
+      }),
+    ]);
+
+    expect(requiredLoopProgress(value)).toEqual({ completed: 2, total: 3 });
   });
 });
