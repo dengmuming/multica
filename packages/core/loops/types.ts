@@ -66,7 +66,7 @@ export interface LoopArtifact {
   id: string;
   artifact_type: string;
   relation: string;
-  title: string;
+  title?: string;
   ref_kind: string;
   ref_id?: string;
   ref_uri?: string;
