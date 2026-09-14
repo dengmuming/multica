@@ -116,6 +116,7 @@ type NavKey =
   | "myIssues"
   | "issues"
   | "projects"
+  | "loops"
   | "autopilots"
   | "agents"
   | "squads"
@@ -132,6 +133,7 @@ type NavLabelKey =
   | "my_issues"
   | "issues"
   | "projects"
+  | "loops"
   | "autopilots"
   | "agents"
   | "squads"
@@ -152,6 +154,7 @@ const personalNav: { key: NavKey; labelKey: NavLabelKey }[] = [
 const workNav: { key: NavKey; labelKey: NavLabelKey }[] = [
   { key: "issues", labelKey: "issues" },
   { key: "projects", labelKey: "projects" },
+  { key: "loops", labelKey: "loops" },
   { key: "autopilots", labelKey: "autopilots" },
 ];
 
@@ -440,40 +443,17 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
   const { data: myInvitations = EMPTY_INVITATIONS } = useQuery(myInvitationListOptions());
   const workspaceCreationDisabled = useConfigStore((s) => s.workspaceCreationDisabled);
 
-  // On a phone the sidebar is a Sheet covering the page, so navigating out of
-  // it has to dismiss it — otherwise the destination renders underneath and the
-  // tap reads as "nothing happened". Closing on `pathname` rather than on each
-  // link's onClick covers every route out of here at once: the nav groups, the
-  // pinned items, the workspace switcher's programmatic push, and anything
-  // added later. `setOpenMobile` is a no-op on desktop, where the sheet is not
-  // the sidebar's rendering at all.
   const { setOpenMobile } = useSidebar();
   useEffect(() => {
     setOpenMobile(false);
   }, [pathname, setOpenMobile]);
 
   const wsId = workspace?.id;
-  // Nav badge. Reads the cross-workspace unread summary fetched just below
-  // for the switcher dot, so the count costs no request of its own — it used
-  // to download the whole inbox list here just to count it (MUL-6967).
   const unreadCount = useInboxUnreadCount(wsId);
-  // Chat tab unread badge: IM-style total of unread *messages* across chat
-  // threads (countUnreadChatMessages is the shared definition — mobile's tab
-  // badge derives from the same function, keeping the platforms in agreement).
   const { data: chatSessions = [] } = useQuery({
     ...chatSessionsOptions(wsId ?? ""),
     enabled: !!wsId,
   });
-  // The session the user is reading right now must not count: the thread list
-  // renders its row badge as 0 (auto mark-read is about to clear it), and a
-  // reply landing in the open conversation would otherwise flash a sidebar
-  // count with no matching row. "Reading right now" = a session is active, a
-  // chat surface is actually showing it (chat page route or the floating
-  // window), AND the app is in the foreground. When the app is backgrounded,
-  // auto mark-read is suppressed (MUL-4485) so the reply stays unread — the
-  // badge must count it, or the notification is silently eaten while the user
-  // is away. A remembered selection while both surfaces are closed also still
-  // counts, for the same reason.
   const activeChatSessionId = useChatStore((s) => s.activeSessionId);
   const floatingChatOpen = useChatStore((s) => s.isOpen);
   const appForeground = useAppForeground();
@@ -486,9 +466,6 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
     () => countUnreadChatMessages(chatSessions, viewedChatSessionId),
     [chatSessions, viewedChatSessionId],
   );
-  // Cross-workspace unread summary backs the workspace-switcher dot. One
-  // shared cache entry across workspaces; gated on an active workspace since
-  // the endpoint resolves through the workspace-member middleware.
   const { data: unreadSummary = EMPTY_INBOX_SUMMARY } = useQuery({
     ...inboxUnreadSummaryOptions(),
     enabled: !!wsId,
@@ -497,8 +474,6 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
     () => hasOtherWorkspaceUnread(unreadSummary, wsId),
     [unreadSummary, wsId],
   );
-  // Which workspaces have unread, so the switcher dropdown can point at the
-  // specific one(s) rather than just the aggregate avatar dot.
   const unreadWsIds = React.useMemo(() => unreadWorkspaceIds(unreadSummary), [unreadSummary]);
   const { data: pinnedItems = EMPTY_PINS } = useQuery({
     ...pinListOptions(wsId ?? "", userId ?? ""),
@@ -515,16 +490,10 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
         ? p.issueDetail(pin.item_id)
         : pin.item_type === "project"
           ? p.projectDetail(pin.item_id)
-          // Views know their target only after their detail loads — the row
-          // resolves its own href; this placeholder never renders as a link.
           : "",
     [p],
   );
 
-  // Local presentational copy of pinnedItems for drop-animation stability.
-  // Follows TQ at rest; frozen during a drag gesture so a mid-drag cache
-  // write (our own optimistic update, or a WS refetch) cannot reorder the
-  // DOM under dnd-kit while its drop animation is still interpolating.
   const [localPinned, setLocalPinned] = useState<PinnedItem[]>(pinnedItems);
   const [localPinnedWsId, setLocalPinnedWsId] = useState<string | null>(wsId ?? null);
   const [expandedPinsWorkspaceId, setExpandedPinsWorkspaceId] = useState<string | null>(null);
@@ -540,9 +509,6 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
   const visiblePinned = localPinnedWsId === (wsId ?? null) ? localPinned : EMPTY_PINS;
   const pinsExpanded = expandedPinsWorkspaceId === wsId;
   const displayedPinned = pinsExpanded ? visiblePinned : visiblePinned.slice(0, PINNED_PREVIEW_LIMIT);
-  // View pins are absent here (their href resolves async): while a view
-  // pin is active the plain nav row for its surface stays highlighted too.
-  // Accepted — suppressing it would need every view detail lifted up here.
   const isActivePinnedRoute = displayedPinned.some((pin) => pathname === getPinHref(pin));
 
   const handleDragStart = useCallback(() => {
@@ -566,14 +532,9 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
   const queryClient = useQueryClient();
   const acceptInvitationMut = useMutation({
     mutationFn: (id: string) => api.acceptInvitation(id),
-    // After accepting an invitation, navigate INTO the newly-joined workspace.
-    // Otherwise the user stays on their current workspace and just sees the
-    // new one appear in the dropdown — silent and confusing (this is MUL-820).
     onSuccess: async (_, invitationId) => {
       const invitation = myInvitations.find((i) => i.id === invitationId);
       queryClient.invalidateQueries({ queryKey: workspaceKeys.myInvitations() });
-      // staleTime: 0 forces a real network fetch — we need the joined workspace
-      // in the list before we can resolve its slug for navigation.
       const list = await queryClient.fetchQuery({
         ...workspaceListOptions(),
         staleTime: 0,
@@ -598,7 +559,6 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
   return (
       <Sidebar variant="inset">
         {topSlot}
-        {/* Workspace Switcher */}
         <SidebarHeader className={cn("py-3", headerClassName)} style={headerStyle}>
           <SidebarMenu>
             <SidebarMenuItem>
@@ -608,10 +568,6 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
                     <SidebarMenuButton>
                       <span className="relative">
                         <WorkspaceAvatar name={workspace?.name ?? "M"} avatarUrl={workspace?.avatar_url} size="sm" />
-                        {/* Shared brand dot: a pending invitation OR another
-                            workspace with unread inbox items. The active
-                            workspace's own unread stays on the Inbox nav count
-                            (below), so it is deliberately excluded here. */}
                         {(myInvitations.length > 0 || otherWorkspaceUnread) && (
                           <span className="absolute -top-0.5 -right-0.5 size-2 rounded-full bg-brand ring-1 ring-sidebar" />
                         )}
@@ -659,11 +615,6 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
                       >
                         <WorkspaceAvatar name={ws.name} avatarUrl={ws.avatar_url} size="sm" />
                         <span className="flex-1 truncate">{ws.name}</span>
-                        {/* Points at the specific workspace holding unread
-                            inbox items. Sits in the same right-edge slot as the
-                            active-workspace check; the active workspace is
-                            excluded (its unread is the Inbox nav count), so dot
-                            and check never collide on one row. */}
                         {ws.id !== workspace?.id && unreadWsIds.has(ws.id) && (
                           <span className="size-2 rounded-full bg-brand" />
                         )}
@@ -754,7 +705,6 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
           </SidebarMenu>
         </SidebarHeader>
 
-        {/* Navigation */}
         <SidebarContent ref={sidebarScrollRef} style={sidebarFadeStyle}>
           <SidebarGroup>
             <SidebarGroupContent>
@@ -913,9 +863,6 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
               );
             })}
           </SidebarMenu>
-          {/* One utility strip: the Discord link takes the leading space the
-              help trigger was leaving empty. `justify-end` keeps the trigger
-              right-aligned once the Discord link is dismissed. */}
           <div className="flex items-center justify-end gap-1">
             <JoinDiscordCard />
             <HelpLauncher />
