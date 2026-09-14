@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/handler"
 	"github.com/multica-ai/multica/server/internal/loopservice"
@@ -115,5 +114,3 @@ func manifoldIssueUpdatedPayload(payload any) (issueID, status string, ok bool) 
 		return "", "", false
 	}
 }
-
-var _ pgtype.UUID
