@@ -15,14 +15,14 @@ type AgentOrganization struct {
 }
 
 type OrganizationRole struct {
-	Key               string                `json:"key"`
-	Name              string                `json:"name"`
-	Description       string                `json:"description,omitempty"`
-	Responsibilities  []string              `json:"responsibilities"`
-	RequiredSkills    []string              `json:"required_skills"`
-	RecommendedSkills []string              `json:"recommended_skills"`
-	Capabilities      []string              `json:"capabilities"`
-	Binding           *OrganizationBinding  `json:"binding,omitempty"`
+	Key               string                 `json:"key"`
+	Name              string                 `json:"name"`
+	Description       string                 `json:"description,omitempty"`
+	Responsibilities  []string               `json:"responsibilities"`
+	RequiredSkills    []string               `json:"required_skills"`
+	RecommendedSkills []string               `json:"recommended_skills"`
+	Capabilities      []string               `json:"capabilities"`
+	Binding           *OrganizationBinding   `json:"binding,omitempty"`
 	Resolution        OrganizationResolution `json:"resolution"`
 }
 
@@ -66,11 +66,24 @@ func OrganizationCatalog() []OrganizationRole {
 }
 
 func role(key, name, description string, capabilities []string) OrganizationRole {
-	return OrganizationRole{Key: key, Name: name, Description: description, Responsibilities: []string{}, RequiredSkills: []string{}, RecommendedSkills: []string{}, Capabilities: capabilities, Resolution: OrganizationResolution{State: "unresolved"}}
+	return OrganizationRole{
+		Key:               key,
+		Name:              name,
+		Description:       description,
+		Responsibilities:  []string{},
+		RequiredSkills:    []string{},
+		RecommendedSkills: []string{},
+		Capabilities:      capabilities,
+		Resolution:        OrganizationResolution{State: "unresolved"},
+	}
 }
 
 func FindOrganizationRole(key string) (OrganizationRole, error) {
 	key = strings.ToLower(strings.TrimSpace(key))
-	for _, item := range OrganizationCatalog() { if item.Key == key { return item, nil } }
+	for _, item := range OrganizationCatalog() {
+		if item.Key == key {
+			return item, nil
+		}
+	}
 	return OrganizationRole{}, errors.New("unknown organization role")
 }
